@@ -1,0 +1,5 @@
+{
+  "name": "Tamil Translator",
+  "description": "An AI-powered application to translate Tamil text to English with a deep understanding of regional dialects and cultural nuances. It provides an addendum explaining the origin, meaning, and variations of key Tamil words.",
+  "requestFramePermissions": []
+}
