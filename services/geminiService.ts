@@ -79,31 +79,65 @@ export const streamTranslationWithAddendum = async (
 ): Promise<void> => {
   try {
     const dictionaryString = dictionary.length > 0
-      ? `The user has provided the following custom dictionary. It is the highest authority. You MUST use the provided English meaning for any Tamil word found in this dictionary:\n${JSON.stringify(dictionary)}`
+      ? `*** IMPORTANT: CUSTOM DICTIONARY OVERRIDE ***
+         The user has provided a custom dictionary. You MUST perform a lookup before translating.
+         If any word in the input text matches a 'tamilWord' in the list below, you MUST use the provided 'englishMeaning' in your translation.
+         Do NOT use a synonym. Do NOT transliterate. Use the exact English definition provided.
+         Dictionary Data: ${JSON.stringify(dictionary)}`
       : 'No custom dictionary provided.';
 
     const prompt = `
       Act as a cultural and linguistic expert specializing in Tamil. Your analysis must be informed by Google Search to ensure accuracy and real-world relevance.
 
-      **CRITICAL RULE**: You must translate every Tamil word into its correct English meaning. DO NOT transliterate (romanize) Tamil words. For example, the Tamil word "சோசியர்" (Josier) is a loanword that means "astrologer". Do not confuse it with "social" or "social worker". Use Google Search to verify the precise meaning of all loanwords, proper nouns, and technical terms.
+      **CRITICAL TRANSLATION RULES**: 
+      1. You must translate every Tamil word into its correct English meaning. 
+      2. **DO NOT TRANSLITERATE** (romanize) Tamil words unless they are proper names (like person names).
+         - INCORRECT: "சோசியர்" translated as "Josier".
+         - CORRECT: "சோசியர்" translated as "Astrologer".
+         - INCORRECT: "பஸ்" translated as "Bus" (if written as 'Bass').
+         - CORRECT: "பஸ்" translated as "Bus".
+      3. Use Google Search to verify the precise meaning of all loanwords, proper nouns, and technical terms to avoid "Tanglish" transliteration errors.
 
       First, perform a comprehensive context analysis of the provided Tamil text. Then, use that analysis to complete the subsequent tasks.
 
       1.  **Context Analysis**:
           -   **Tone**: Identify the tone (e.g., formal, poetic, conversational, humorous, somber).
           -   **Sentiment**: Determine the overall sentiment (e.g., positive, negative, nostalgic, critical).
-          -   **Cultural Notes**: Point out any subtle cultural references, social nuances, or potential ambiguities that a non-native speaker might miss. This is crucial for a deep understanding.
-          -   **Dialect**: Analyze the text for specific linguistic markers to identify a regional dialect. Look for unique vocabulary, colloquialisms, or phrasing characteristic of regions like 'Madurai Tamil', 'Jaffna Tamil', 'Tirunelveli Tamil', 'Coimbatore Tamil', or 'Chennai Tamil'. For example, does it use specific words like "என்னலே" (ennale), "பிகிலு" (bigilu), or verb endings like "-ஆங்க" (-aanga) vs. "-ஆனம்" (-aannam)? Based on these markers, state the most likely dialect. If no specific markers are found, return 'General Tamil'.
+          -   **Cultural Notes**: Point out any subtle cultural references, social nuances, or potential ambiguities that a non-native speaker might miss. **Crucially, if a dialect is identified, you MUST cite the specific word(s) or phrase(s) from the input text that led to your conclusion here.**
+          -   **Dialect Identification (HIGH PRIORITY)**: Perform a deep linguistic analysis to identify the most probable regional dialect. You MUST justify your conclusion with specific evidence from the text (to be included in the 'Cultural Notes' above).
+              -   **Methodology**:
+                  1.  Scan for **lexical markers** (unique vocabulary and slang).
+                  2.  Scan for **phonological markers** (indicated by spelling choices that reflect pronunciation).
+                  3.  Scan for **grammatical markers** (unique verb conjugations, suffixes, particles, or sentence structures).
+              -   **Dialect Cheat Sheet (Use these examples to guide your analysis):**
+                  *   **Tirunelveli / Nellai Tamil**: Look for words like "அண்ணாச்சி" (annachi), the suffix "-லே" (e.g., "என்னலே" - ennale), informal address like "ஏலே" (elae), and fast-paced speech patterns. Question form "என்னா?" (enna?) instead of "என்ன?" (enna?).
+                  *   **Madurai Tamil**: Characterized by a drawn-out tone. Look for words like "அங்கன" (angana) for "அங்கே" (ange), "இங்கன" (ingana) for "இங்கே" (inge), "பைய" (paiya) for 'slowly', and verb endings like "-ஆப்ல" (-aapla). Use of the particle "வை" (vai) for emphasis. Tendency to use \`போல\` (pola) instead of \`மாதிரி\` (maathiri).
+                  *   **Coimbatore / Kongu Tamil**: Known for its respectful tone. Look for the honorific "ங்க" (nga) used frequently (e.g., "வாங்க," "சொல்லுங்க"). Unique words like "அக்கட்ட" (akkata) for "that side," "கண்டீங்களா" (kandeengala) for "did you see?", and the use of "கிறு" (kiru) in present continuous tense (e.g., "சொல்லிட்டு கீறன்").
+                  *   **Chennai / Madras Tamil**: A mix of other dialects with numerous English loanwords. Look for slang like "மச்சி" (machi - 'dude'), "கலாய்" (kalaai - 'to tease'), "கேவுள்" (kevul - 'great'), "மொக்கை" (mokkai - 'lame'), and unique pronouns like "என்ட" (enda).
+                  *   **Jaffna / Yazhpanam Tamil (Sri Lanka)**: Retains older Tamil forms. Look for different vocabulary, such as "பெட்டை" (pettai) for "girl", "ஆம்பிளை" (aambalai) for "boy/man", "பேந்து" (pendhu) for 'afterwards', and unique verb forms (e.g., future tense).
+                  *   **Nanjil Nadu Tamil (Kanyakumari)**: A mix of Tamil and Malayalam influences. Look for unique pronouns, Malayalam loanwords, and words like "சானம்" (chaanam) for "சாணம்" (saanam) and "ஏணி" (eni) for 'then'.
+              -   **Output**: Based on your analysis, state the most likely dialect. If no specific markers are present, classify it as 'General Literary Tamil' or 'General Spoken Tamil'.
 
-      2.  **Informed Translation**: Based *directly* on your context analysis and adhering strictly to the CRITICAL RULE above, provide a fluent, culturally-aware English translation. Your word choices should reflect the identified tone and sentiment. When streaming the translation via "translationChunk" objects, you MUST preserve all paragraph breaks from the original text by including "\\n" characters in the JSON data string. ${dictionaryString}
+      2.  **Informed Translation**: Based *directly* on your context analysis and adhering strictly to the CRITICAL RULES above, provide a fluent, culturally-aware English translation. Your word choices should reflect the identified tone and sentiment. When streaming the translation via "translationChunk" objects, you MUST preserve all paragraph breaks from the original text by including "\\n" characters in the JSON data string. ${dictionaryString}
 
-      3.  **Idiom Analysis**: Scan the text for any idiomatic phrases or proverbs. If one is found, create an 'idiom' object with the specific Tamil phrase itself in the 'phrase' field, its literal vs. figurative meanings in the 'explanation' field, and a direct English translation of just the phrase in the 'translation' field. If no idiom is found, do not output an object for it.
+      3.  **Idiom Analysis**: Scan the text for any idiomatic phrases or proverbs. Use Google Search to find context.
+          -   If an idiom is found, create an 'idiom' object.
+          -   **'phrase'**: The specific Tamil phrase.
+          -   **'translation'**: A direct English translation of just the phrase.
+          -   **'explanation'**: This MUST be a JSON object with the following keys:
+              -   **'literal'**: (string) The literal, word-for-word meaning of the phrase.
+              -   **'figurative'**: (string) The actual, figurative meaning of the idiom.
+              -   **'context'**: (string, optional) Provide historical context, origin, or common scenarios where this idiom is used, based on search results. If no relevant context is found, omit this key.
+          -   If no idiom is found, do not output an object for it.
 
-      4.  **Word Deep Dive (Addendum)**: Identify 3-5 key words with deep cultural, literary, or regional significance. For each word, provide a detailed addendum.
+      4.  **Word Deep Dive (Addendum)**: Identify 2-3 key words with deep cultural, literary, or regional significance. For each word, provide a concise but insightful addendum. **Prioritize speed and the most relevant information.**
           -   The 'word' field MUST contain the Tamil word.
           -   The 'englishWord' field MUST contain its primary, single-word or short-phrase English equivalent (e.g., 'Respect' for 'மரியாதை').
-          -   This addendum MUST include specific dialectal variations. Go beyond common dialects and focus on **lesser-known regional variations** from Tamil Nadu and Sri Lanka (e.g., Kongu Nadu, Nellai, Nanjil Nadu, Batticaloa, Up-Country Tamil). For each variation, you MUST structure it as an object within a 'variations' array. Each object in the array must contain: a 'dialect' key (e.g., 'Tirunelveli Tamil'), either a 'vocabulary' key OR a 'pronunciation' key explaining the difference, and an 'example' key containing an object with "tamil" and "english" keys for the sentence and its translation. Furthermore, analyze the word's etymology in the 'origin' field. If it has a **complex origin** (e.g., a loanword or significant meaning shifts over time), you MUST also provide a structured \`etymology\` field as an array of steps, where each step includes an \`era\`, \`language\`, and \`note\`. If the origin is simple, this field should be \`null\`.
-          -   For each deep-dive word, also provide 2-3 **related Tamil words**. Each related word MUST be an object containing the 'word' (English), 'tamilWord', and a 'reason' explaining its connection to the deep-dive word. This MUST be an array of objects in a \`relatedWords\` field. If no relevant words are found, provide an empty array \`[]\`.
+          -   The addendum MUST include a 'meaning', 'variations', 'origin', and 'relatedWords'.
+          -   For 'variations', keep the descriptions brief.
+          -   For 'relatedWords', provide 1-2 highly relevant words. If none are found, an empty array \`[]\` is acceptable.
+          -   The 'etymology' field is OPTIONAL. Only include it if the word has a complex and noteworthy origin. Otherwise, omit it or set it to null.
+
 
       Tamil Text:
       ---
@@ -138,7 +172,10 @@ export const streamTranslationWithAddendum = async (
     });
 
     let buffer = '';
+    let completed = false;
     for await (const chunk of responseStream) {
+      // FIX: The `.text` accessor on a `GenerateContentResponse` object is a property, not a method.
+      // Accessing it as `chunk.text()` causes a "not callable" error.
       buffer += chunk.text;
       let newlineIndex;
       while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
@@ -149,6 +186,7 @@ export const streamTranslationWithAddendum = async (
             const parsed = JSON.parse(line);
             if (parsed.type && parsed.data) {
                 if (parsed.type === 'end') {
+                    completed = true;
                     const groundingChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks;
                     let sources: { uri: string; title: string; }[] = [];
                     if (groundingChunks) {
@@ -175,18 +213,12 @@ export const streamTranslationWithAddendum = async (
         }
       }
     }
-    // Handle any remaining buffer content if the stream ends without a newline
-    if (buffer.trim()) {
-        try {
-            const parsed = JSON.parse(buffer.trim());
-            if (parsed.type === 'end') {
-                onUpdate({ type: 'complete', payload: null });
-            }
-        } catch (e) {
-             console.warn("Could not parse final streaming buffer:", buffer.trim(), e);
-        }
+    
+    // If the stream ends without a proper 'end' signal, force completion to avoid an infinite loading state.
+    if (!completed) {
+        console.warn("Stream ended without a 'end' signal. Forcing completion.");
+        onUpdate({ type: 'complete', payload: null });
     }
-
 
   } catch (error) {
     console.error("Error calling Gemini API:", error);
@@ -198,7 +230,7 @@ export const streamTranslationWithAddendum = async (
     };
 
     if (error instanceof Error) {
-      const errorMessage = error.message;
+      const errorMessage = error.message.toLowerCase();
 
       if (errorMessage.includes('api_key') || errorMessage.includes('permission denied')) {
         apiError = {
@@ -212,7 +244,13 @@ export const streamTranslationWithAddendum = async (
           message: "Could not connect to the translation service. Please check your internet connection and try again.",
           isRetryable: true,
         };
-      } else if (errorMessage.includes('Invalid response structure')) {
+      } else if (errorMessage.includes('503') || errorMessage.includes('unavailable') || errorMessage.includes('overloaded')) {
+        apiError = {
+          title: "Service Busy",
+          message: "The AI service is currently experiencing high traffic or is temporarily unavailable. Please try again in a moment.",
+          isRetryable: true,
+        };
+      } else if (errorMessage.includes('invalid response structure')) {
          apiError = {
           title: "Invalid Response",
           message: "The AI returned data in an unexpected format. This might be a temporary issue.",
@@ -224,7 +262,7 @@ export const streamTranslationWithAddendum = async (
             message: "The text provided could not be processed. Please check for any unusual characters or formatting.",
             isRetryable: false
           }
-      } else if (errorMessage.includes('Content Blocked')) {
+      } else if (errorMessage.includes('content blocked')) {
           apiError = {
             title: "Content Blocked",
             message: "The request was blocked by the content filter. Please try rephrasing your text.",
@@ -268,6 +306,8 @@ export const getDictionaryEntry = async (tamilWord: string): Promise<DictionaryE
     if (!response.text) {
         throw new Error('The AI returned an empty response for the dictionary entry.');
     }
+    // FIX: The `.text` accessor on a `GenerateContentResponse` object is a property, not a method.
+    // Accessing it as `response.text()` causes a "not callable" error.
     const parsedResponse = extractAndParseJson(response.text);
 
     if (parsedResponse.englishWord && parsedResponse.tamilMeaning && parsedResponse.englishMeaning) {
@@ -278,8 +318,13 @@ export const getDictionaryEntry = async (tamilWord: string): Promise<DictionaryE
 
   } catch (error) {
     console.error(`Error fetching dictionary entry for "${tamilWord}":`, error);
-    if (error instanceof Error && error.message.toLowerCase().includes('api_key')) {
+    const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+
+    if (errorMessage.includes('api_key')) {
          throw new Error("Authentication failed. Check your API key.");
+    }
+    if (errorMessage.includes('503') || errorMessage.includes('unavailable') || errorMessage.includes('overloaded')) {
+         throw new Error("Service is temporarily unavailable (503). Please try again.");
     }
     throw new Error(`Could not find a definition for "${tamilWord}". Please check the spelling or try another word.`);
   }
@@ -310,6 +355,8 @@ export const getTamilMeaning = async (tamilWord: string): Promise<string> => {
     if (!response.text) {
         throw new Error('The AI returned an empty response for the Tamil meaning.');
     }
+    // FIX: The `.text` accessor on a `GenerateContentResponse` object is a property, not a method.
+    // Accessing it as `response.text()` causes a "not callable" error.
     const parsedResponse = extractAndParseJson(response.text);
 
     if (parsedResponse.tamilMeaning && typeof parsedResponse.tamilMeaning === 'string') {
@@ -319,8 +366,13 @@ export const getTamilMeaning = async (tamilWord: string): Promise<string> => {
     }
   } catch (error) {
     console.error(`Error fetching Tamil meaning for "${tamilWord}":`, error);
-    if (error instanceof Error && error.message.toLowerCase().includes('api_key')) {
+    const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    
+    if (errorMessage.includes('api_key')) {
          throw new Error("Authentication failed. Check your API key.");
+    }
+    if (errorMessage.includes('503') || errorMessage.includes('unavailable') || errorMessage.includes('overloaded')) {
+         throw new Error("Service is temporarily unavailable (503). Please try again.");
     }
     throw new Error(`Could not find a Tamil definition for "${tamilWord}".`);
   }

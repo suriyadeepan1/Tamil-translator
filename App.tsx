@@ -1,19 +1,52 @@
-import React, { useState, useCallback, useEffect } from 'react';
+
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { streamTranslationWithAddendum, getDictionaryEntry, getTamilMeaning } from './services/geminiService';
-import { TranslationResponse, ApiError, DictionaryWord, ContextAnalysis, WordAddendum, RelatedWord, DialectVariation } from './types';
+import { TranslationResponse, ApiError, DictionaryWord, ContextAnalysis, WordAddendum, RelatedWord, DialectVariation, TranslationHistoryItem } from './types';
 import Loader from './components/Loader';
 import ErrorDisplay from './components/ErrorDisplay';
 import { transliterate } from './services/transliteration';
 import WordCard from './components/WordCard';
 import { StreamedUpdate } from './services/geminiService';
 import HighlightedText from './components/HighlightedText';
+import { defaultDictionary } from './data/dictionary';
 
 interface AddWordError {
   message: string;
   word?: string;
 }
 
+// Levenshtein distance algorithm for fuzzy search
+const levenshteinDistance = (a: string, b: string): number => {
+  const matrix = [];
+  for (let i = 0; i <= b.length; i++) { matrix[i] = [i]; }
+  for (let j = 0; j <= a.length; j++) { matrix[0][j] = j; }
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1));
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+};
+
 const App: React.FC = () => {
+  // Network Status
+  const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
   const [userInput, setUserInput] = useState<string>('');
   
   // State for streaming response
@@ -31,230 +64,263 @@ const App: React.FC = () => {
 
   // Dictionary State
   const [dictionary, setDictionary] = useState<DictionaryWord[]>([]);
+  const [isDictionaryLoaded, setIsDictionaryLoaded] = useState(false);
   const [isAddingWord, setIsAddingWord] = useState(false);
   const [addWordError, setAddWordError] = useState<AddWordError | null>(null);
   const [focusedWord, setFocusedWord] = useState<string | null>(null); // For dictionary navigation
   const [activeDictionaryTab, setActiveDictionaryTab] = useState<'tamil' | 'english'>('tamil');
+  
+  // Word Editing State
+  const [isWordModalOpen, setIsWordModalOpen] = useState(false);
+  const [editingWord, setEditingWord] = useState<DictionaryWord | null>(null);
 
+  // History State
+  const [translationHistory, setTranslationHistory] = useState<TranslationHistoryItem[]>([]);
+
+  // Ref to hold the latest dictionary state for use in stable callbacks
+  const dictionaryRef = useRef(dictionary);
+  useEffect(() => {
+    dictionaryRef.current = dictionary;
+  }, [dictionary]);
+
+  // Ref to hold latest streaming data to save to history on completion
+  const currentStreamRef = useRef<{
+    translation: string;
+    context: ContextAnalysis | null;
+    addendum: WordAddendum[];
+    idiom: TranslationResponse['idiom'] | null;
+    sources: { uri: string; title: string; }[];
+  }>({ translation: '', context: null, addendum: [], idiom: null, sources: [] });
+
+  useEffect(() => {
+    currentStreamRef.current = {
+      translation: streamingTranslation,
+      context: streamingContext,
+      addendum: streamingAddendum,
+      idiom: streamingIdiom,
+      sources: streamingSources
+    };
+  }, [streamingTranslation, streamingContext, streamingAddendum, streamingIdiom, streamingSources]);
   
   const defaultText = `மரியாதை என்பது கொடுக்கல் வாங்கல் போன்றது. நீ மற்றவர்களுக்கு கொடுத்தால் தான், உனக்கு மரியாதை கிடைக்கும்.`;
-  
-  const defaultDictionary: DictionaryWord[] = [
-    // --- General Words ---
-    {
-      tamilWord: 'வணக்கம்',
-      englishWord: 'Hello / Greeting',
-      tamilMeaning: 'ஒருவரை சந்திக்கும் போது அல்லது விடைபெறும் போது பயன்படுத்தப்படும் ஒரு பாரம்பரிய தமிழ் வாழ்த்து.',
-      englishMeaning: 'A traditional Tamil greeting used when meeting or leaving someone, similar to "hello" or "goodbye".',
-      example: {
-        tamil: 'காலை வணக்கம், நண்பரே!',
-        english: 'Good morning, my friend!',
-      },
-    },
-    {
-      tamilWord: 'நன்றி',
-      englishWord: 'Thank You',
-      tamilMeaning: 'ஒருவர் செய்த உதவிக்கு அல்லது அன்பிற்கு நன்றி தெரிவிக்கும் சொல்.',
-      englishMeaning: 'A word to express gratitude for help or kindness received.',
-      example: {
-        tamil: 'உங்கள் உதவிக்கு மிக்க நன்றி.',
-        english: 'Thank you very much for your help.',
-      },
-    },
-    {
-      tamilWord: 'அன்பு',
-      englishWord: 'Love / Affection',
-      tamilMeaning: 'பாசம், நேசம், மற்றும் மென்மையான உணர்வுகளின் வெளிப்பாடு.',
-      englishMeaning: 'An expression of affection, love, and tender feelings.',
-       example: {
-        tamil: 'தாய் தன் குழந்தை மீது அன்பு காட்டினாள்.',
-        english: 'The mother showed affection for her child.',
-      },
-    },
-    // --- Karisal Region Words ---
-    {
-      tamilWord: 'கரிசல்',
-      englishWord: 'Karisal / Arid Land',
-      tamilMeaning: 'வறண்ட நிலப்பகுதியைக் குறிக்கும் சொல், குறிப்பாக கோவில்பட்டி மற்றும் அதன் சுற்றுவட்டாரப் பகுதிகள்.',
-      englishMeaning: 'Refers to the arid, black soil region, particularly around Kovilpatti. Associated with the works of author Ki. Rajanarayanan.',
-      example: {
-        tamil: 'கரிசல் மண் விவசாயத்திற்கு ஏற்றது.',
-        english: 'The black soil is suitable for agriculture.',
-      },
-    },
-    {
-      tamilWord: 'பசலை',
-      englishWord: 'Pasalai / Lovesickness',
-      tamilMeaning: 'ஒரு வகை கீரை; இலக்கியத்தில், பிரிவினால் ஏற்படும் ஒருவித நோய் அல்லது ஏக்கத்தைக் குறிக்கும்.',
-      englishMeaning: 'A type of spinach; in literature, it refers to a lovesickness or pallor caused by separation from a lover.',
-      example: {
-        tamil: 'தலைவனைப் பிரிந்த தலைவிக்கு பசலை நோய் வந்தது.',
-        english: 'The heroine suffered from lovesickness after being separated from her hero.',
-      },
-    },
-    {
-      tamilWord: 'ஏத்தம்',
-      englishWord: 'Eatham / Well Irrigation',
-      tamilMeaning: 'கிணற்றிலிருந்து நீர் இறைக்கப் பயன்படும் ஒரு பாரம்பரிய சாதனம்.',
-      englishMeaning: 'A traditional well irrigation device using a long pole and bucket, common in the Karisal region.',
-      example: {
-        tamil: 'விவசாயி ஏத்தம் இறைத்து வயலுக்கு நீர் பாய்ச்சினார்.',
-        english: 'The farmer irrigated the field by drawing water using an eatham.',
-      },
-    },
-    // --- Modern Tamil Literature ---
-    {
-      tamilWord: 'தனிமை',
-      englishWord: 'Solitude / Loneliness',
-      tamilMeaning: 'தனித்து இருக்கும் நிலை; நவீன இலக்கியத்தில் தனிநபரின் ஒதுக்கப்பட்ட உணர்வை விவரிக்கும் ஒரு முக்கியக் கருப்பொருள்.',
-      englishMeaning: 'The state of being alone, solitude; a major theme in modern literature exploring an individual\'s sense of isolation.',
-      example: {
-        tamil: 'அவர் தன் முதுமையில் தனிமையை உணர்ந்தார்.',
-        english: 'He felt loneliness in his old age.',
-      },
-    },
-    {
-      tamilWord: 'விளிம்புநிலை',
-      englishWord: 'Marginalized',
-      tamilMeaning: 'சமூகத்தின் மைய நீரோட்டத்திலிருந்து ஒதுக்கப்பட்ட அல்லது புறக்கணிக்கப்பட்ட மக்களைக் குறிக்கும் சொல்.',
-      englishMeaning: 'A term referring to marginalized or subaltern people, who are excluded from the societal mainstream.',
-      example: {
-        tamil: 'அந்தத் திட்டம் விளிம்புநிலை மக்களுக்கு உதவியது.',
-        english: 'That scheme helped the marginalized people.',
-      },
-    },
-    {
-      tamilWord: 'இருண்மை',
-      englishWord: 'Obscurity / Ambiguity',
-      tamilMeaning: 'பொருள் தெளிவற்ற, சிக்கலான எழுத்து நடையைக் குறிக்கும் இலக்கியச் சொல். நவீனத்துவப் படைப்புகளில் காணப்படும் ஒரு தன்மை.',
-      englishMeaning: 'Obscurity or darkness; a literary term for a complex, non-linear, and often ambiguous style of writing found in modernist works.',
-      example: {
-        tamil: 'அவரது கவிதைகளில் இருண்மை அதிகமாக உள்ளது.',
-        english: 'There is a lot of obscurity in his poems.',
-      },
-    }
-  ];
 
-  // Load dictionary from localStorage on initial render
+  // Load History from localStorage
   useEffect(() => {
     try {
-      const storedDictionary = localStorage.getItem('tamilDictionary');
-      if (storedDictionary) {
-        const parsed = JSON.parse(storedDictionary);
-        if (
-          Array.isArray(parsed) &&
-          parsed.every(
-            (item: any) =>
+      const storedHistory = localStorage.getItem('translationHistory');
+      if (storedHistory) {
+        setTranslationHistory(JSON.parse(storedHistory));
+      }
+    } catch (e) {
+      console.error("Failed to load translation history", e);
+    }
+  }, []);
+
+  // Load and merge dictionary from localStorage on initial render
+  useEffect(() => {
+    try {
+      const defaultDictionaryMap = new Map<string, DictionaryWord>(
+        defaultDictionary.map(item => [item.tamilWord, item])
+      );
+
+      const storedDictionaryJSON = localStorage.getItem('tamilDictionary');
+      if (storedDictionaryJSON) {
+        const storedDictionary = JSON.parse(storedDictionaryJSON);
+
+        if (Array.isArray(storedDictionary)) {
+          // Validate and add stored items. Stored items take precedence over default ones.
+          storedDictionary.forEach((item: any) => {
+            if (
               typeof item === 'object' &&
               item !== null &&
               typeof item.tamilWord === 'string' &&
               typeof item.englishWord === 'string' &&
               typeof item.englishMeaning === 'string' &&
               typeof item.tamilMeaning === 'string'
-          )
-        ) {
-          setDictionary(parsed as DictionaryWord[]);
-        } else {
-          console.warn("Data in localStorage is not a valid dictionary. Using default.");
-          setDictionary(defaultDictionary);
+            ) {
+              defaultDictionaryMap.set(item.tamilWord, item as DictionaryWord);
+            }
+          });
         }
-      } else {
-        setDictionary(defaultDictionary);
       }
+      
+      const sortedDictionary = Array.from(defaultDictionaryMap.values()).sort((a, b) => a.tamilWord.localeCompare(b.tamilWord, 'ta'));
+      setDictionary(sortedDictionary);
+
     } catch (error) {
-      console.error("Failed to load dictionary from localStorage:", error);
-      setDictionary(defaultDictionary);
+      console.error("Failed to load or merge dictionary from localStorage:", error);
+      // Fallback to default on any error
+      const sortedDefault = [...defaultDictionary].sort((a, b) => a.tamilWord.localeCompare(b.tamilWord, 'ta'));
+      setDictionary(sortedDefault);
+    } finally {
+      setIsDictionaryLoaded(true);
     }
   }, []);
 
-  // Save dictionary to localStorage whenever it changes
+  // Listen for storage changes to sync across tabs
   useEffect(() => {
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === 'tamilDictionary' && event.newValue) {
+        try {
+          const syncedDictionary = JSON.parse(event.newValue);
+          if (Array.isArray(syncedDictionary)) {
+            setDictionary(syncedDictionary);
+          }
+        } catch (error) {
+          console.error("Failed to sync dictionary from external change:", error);
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
+  // Save dictionary to localStorage whenever it changes, BUT ONLY after initial load is complete.
+  useEffect(() => {
+    if (!isDictionaryLoaded) return;
+
     try {
       localStorage.setItem('tamilDictionary', JSON.stringify(dictionary));
     } catch (error) {
       console.error("Failed to save dictionary to localStorage:", error);
     }
-  }, [dictionary]);
+  }, [dictionary, isDictionaryLoaded]);
 
   const updateDictionary = useCallback((newOrUpdatedEntry: DictionaryWord) => {
     setDictionary(prevDictionary => {
         const dictionaryMap = new Map<string, DictionaryWord>(prevDictionary.map(item => [item.tamilWord, item]));
         const key = newOrUpdatedEntry.tamilWord;
-        const existing = dictionaryMap.get(key);
         
-        const finalEntry = { ...newOrUpdatedEntry };
-        if (existing && existing.englishMeaning !== 'Meaning not defined yet.') {
-            finalEntry.englishMeaning = existing.englishMeaning;
-        }
-        if (existing && existing.tamilMeaning !== 'பொருள் வரையறுக்கப்படவில்லை') {
-            finalEntry.tamilMeaning = existing.tamilMeaning;
-        }
+        // Merge with existing data to prevent overwriting details
+        const existingEntry = dictionaryMap.get(key) || {};
+        const finalEntry = { ...existingEntry, ...newOrUpdatedEntry };
+
         dictionaryMap.set(key, finalEntry);
         
         return Array.from(dictionaryMap.values()).sort((a, b) => a.tamilWord.localeCompare(b.tamilWord, 'ta'));
     });
   }, []);
 
+  const addToHistory = useCallback((text: string, response: TranslationResponse) => {
+    const newItem: TranslationHistoryItem = {
+      id: Date.now().toString(),
+      timestamp: Date.now(),
+      originalText: text,
+      response: response
+    };
+
+    setTranslationHistory(prev => {
+      // Keep only the last 20 items to avoid localStorage limits
+      const updated = [newItem, ...prev].slice(0, 20);
+      localStorage.setItem('translationHistory', JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
 
   const handleStreamUpdate = useCallback(async (update: StreamedUpdate) => {
-    setHasStreamedContent(true);
-    switch (update.type) {
-      case 'context':
-        setStreamingContext(update.payload);
-        break;
-      case 'translationChunk':
-        setStreamingTranslation(prev => prev + update.payload);
-        break;
-      case 'addendum':
-        const addendumItem = update.payload as WordAddendum;
-        setStreamingAddendum(prev => [...prev, addendumItem]);
-        
-        const existingEntry = dictionary.find(d => d.tamilWord === addendumItem.word);
-        let tamilMeaning = existingEntry?.tamilMeaning || '';
-        if (!existingEntry) {
-          try {
-            tamilMeaning = await getTamilMeaning(addendumItem.word);
-          } catch (error) {
-            console.warn(`Could not fetch Tamil meaning for "${addendumItem.word}":`, error);
-            tamilMeaning = 'பொருள் கிடைக்கவில்லை';
+    try {
+      setHasStreamedContent(true);
+      switch (update.type) {
+        case 'context':
+          setStreamingContext(update.payload);
+          break;
+        case 'translationChunk':
+          setStreamingTranslation(prev => prev + update.payload);
+          break;
+        case 'addendum': {
+          const addendumItem = update.payload as WordAddendum;
+          setStreamingAddendum(prev => [...prev, addendumItem]);
+          
+          const existingEntry = dictionaryRef.current.find(d => d.tamilWord === addendumItem.word);
+          let tamilMeaning = existingEntry?.tamilMeaning || '';
+  
+          if (!existingEntry || existingEntry.tamilMeaning === 'பொருள் வரையறுக்கப்படவில்லை') {
+            try {
+               // Only fetch if online
+               if (navigator.onLine) {
+                  tamilMeaning = await getTamilMeaning(addendumItem.word);
+               } else {
+                  tamilMeaning = 'பொருள் வரையறுக்கப்படவில்லை (Offline)';
+               }
+            } catch (error) {
+              console.warn(`Could not fetch Tamil meaning for "${addendumItem.word}":`, error);
+              tamilMeaning = 'பொருள் கிடைக்கவில்லை';
+            }
           }
+          updateDictionary({
+            tamilWord: addendumItem.word,
+            tamilMeaning: tamilMeaning,
+            englishWord: addendumItem.englishWord,
+            englishMeaning: addendumItem.meaning,
+            variations: addendumItem.variations,
+            example: addendumItem.example,
+            origin: addendumItem.origin,
+            etymology: addendumItem.etymology,
+          });
+          break;
         }
-        updateDictionary({
-          ...(existingEntry || { tamilWord: addendumItem.word, tamilMeaning }),
-          englishWord: addendumItem.englishWord,
-          englishMeaning: addendumItem.meaning,
-          variations: addendumItem.variations,
-          example: addendumItem.example,
-          origin: addendumItem.origin,
-          etymology: addendumItem.etymology,
-        });
-        break;
-      case 'idiom':
-        const idiom = update.payload;
-        setStreamingIdiom(idiom);
-        updateDictionary({
-          tamilWord: idiom.phrase,
-          englishWord: 'Idiom / Phrase',
-          englishMeaning: idiom.translation,
-          tamilMeaning: "இது ஒரு மரபுத்தொடர்.", // "This is an idiom."
-          idiomExplanation: idiom.explanation,
-        });
-        break;
-      case 'sources':
-        setStreamingSources(update.payload);
-        break;
-      case 'complete':
-        setIsLoading(false);
-        break;
-      case 'error':
-        setError(update.payload as ApiError);
-        setIsLoading(false);
-        break;
+        case 'idiom': {
+          const idiom = update.payload;
+          setStreamingIdiom(idiom);
+          updateDictionary({
+            tamilWord: idiom.phrase,
+            englishWord: 'Idiom / Phrase',
+            englishMeaning: idiom.translation,
+            tamilMeaning: "இது ஒரு மரபுத்தொடர்.", // "This is an idiom."
+            idiomExplanation: idiom.explanation,
+          });
+          break;
+        }
+        case 'sources':
+          setStreamingSources(update.payload);
+          break;
+        case 'complete':
+          setIsLoading(false);
+          // Save to history on completion
+          const finalData = currentStreamRef.current;
+          if (finalData.translation && finalData.context) {
+            addToHistory(lastTranslatedText, {
+              translation: finalData.translation,
+              contextAnalysis: finalData.context,
+              addendum: finalData.addendum,
+              idiom: finalData.idiom || undefined,
+              sources: finalData.sources
+            });
+          }
+          break;
+        case 'error':
+          setError(update.payload as ApiError);
+          setIsLoading(false);
+          break;
+      }
+    } catch (e) {
+      console.error("Error processing stream update:", e);
+      setError({
+          title: "Application Error",
+          message: "An error occurred while processing the translation data. Please try again.",
+          isRetryable: true,
+      });
+      setIsLoading(false);
     }
-  }, [dictionary, updateDictionary]);
+  }, [updateDictionary, lastTranslatedText, addToHistory]);
+
+  const loadFromHistory = (item: TranslationHistoryItem) => {
+    setUserInput(item.originalText);
+    setLastTranslatedText(item.originalText);
+    setStreamingTranslation(item.response.translation);
+    setStreamingContext(item.response.contextAnalysis);
+    setStreamingAddendum(item.response.addendum);
+    setStreamingIdiom(item.response.idiom || null);
+    setStreamingSources(item.response.sources || []);
+    setHasStreamedContent(true);
+    setActiveTab('translation');
+    setError(null);
+  };
 
   const handleTranslate = useCallback(async (textToTranslate: string) => {
-    if (!textToTranslate.trim()) {
+    const trimmedText = textToTranslate.trim();
+    if (!trimmedText) {
       setError({
         title: "Input Required",
         message: "Please enter some text to translate.",
@@ -262,6 +328,24 @@ const App: React.FC = () => {
       });
       return;
     }
+
+    // Offline handling
+    if (!isOnline) {
+      // Check history for exact match
+      const cached = translationHistory.find(t => t.originalText.trim() === trimmedText);
+      if (cached) {
+        loadFromHistory(cached);
+        return;
+      } else {
+        setError({
+          title: "You are Offline",
+          message: "Cannot translate new text while offline. Please check your internet connection or view History for past translations.",
+          isRetryable: false
+        });
+        return;
+      }
+    }
+
     // Reset state for new translation
     setIsLoading(true);
     setError(null);
@@ -272,15 +356,15 @@ const App: React.FC = () => {
     setStreamingSources([]);
     setHasStreamedContent(false);
     
-    setLastTranslatedText(textToTranslate);
+    setLastTranslatedText(trimmedText);
     setActiveTab('translation');
 
     await streamTranslationWithAddendum(
-      textToTranslate,
+      trimmedText,
       dictionary.map(d => ({ tamilWord: d.tamilWord, englishMeaning: d.englishMeaning })),
       handleStreamUpdate
     );
-  }, [dictionary, handleStreamUpdate]);
+  }, [dictionary, handleStreamUpdate, isOnline, translationHistory]);
 
   const handleUseDefault = () => {
     setUserInput(defaultText);
@@ -302,6 +386,19 @@ const App: React.FC = () => {
       return;
     }
     
+    if (!isOnline) {
+       // If offline, don't show error, just open the manual entry modal prefilled
+       setEditingWord({ 
+           tamilWord: trimmedWord, 
+           englishWord: '', 
+           tamilMeaning: '', 
+           englishMeaning: '' 
+       });
+       setIsWordModalOpen(true);
+       setAddWordError(null);
+       return;
+    }
+
     setIsAddingWord(true);
     setAddWordError(null);
     
@@ -330,13 +427,13 @@ const App: React.FC = () => {
   };
   
   const handleAddWordManually = (wordToAdd: string) => {
-    const newDictionaryWord: DictionaryWord = {
-      tamilWord: wordToAdd,
-      englishWord: 'Custom Word',
-      tamilMeaning: 'பொருள் வரையறுக்கப்படவில்லை',
-      englishMeaning: 'Meaning not defined yet.',
-    };
-    setDictionary(prev => [newDictionaryWord, ...prev].sort((a, b) => a.tamilWord.localeCompare(b.tamilWord, 'ta')));
+    setEditingWord({ 
+       tamilWord: wordToAdd, 
+       englishWord: '', 
+       tamilMeaning: '', 
+       englishMeaning: '' 
+    });
+    setIsWordModalOpen(true);
     setAddWordError(null);
   };
 
@@ -348,7 +445,58 @@ const App: React.FC = () => {
     setFocusedWord(word.tamilWord);
   };
 
-  const [activeTab, setActiveTab] = useState<'translation' | 'dictionary'>('dictionary');
+  const handleUploadDictionary = (uploadedWords: DictionaryWord[]) => {
+    setDictionary(prevDictionary => {
+      const dictionaryMap = new Map<string, DictionaryWord>(prevDictionary.map(item => [item.tamilWord, item]));
+      uploadedWords.forEach(word => {
+          if (word.tamilWord && word.englishWord && word.tamilMeaning && word.englishMeaning) {
+              dictionaryMap.set(word.tamilWord, word);
+          }
+      });
+      return Array.from(dictionaryMap.values()).sort((a, b) => a.tamilWord.localeCompare(b.tamilWord, 'ta'));
+    });
+  };
+  
+  const handleDeleteWord = (tamilWord: string) => {
+    if (window.confirm(`Are you sure you want to delete "${tamilWord}" from the dictionary?`)) {
+        setDictionary(prev => prev.filter(w => w.tamilWord !== tamilWord));
+    }
+  };
+  
+  const handleEditWord = (word: DictionaryWord) => {
+      setEditingWord(word);
+      setIsWordModalOpen(true);
+  };
+
+  const handleSaveWord = (word: DictionaryWord) => {
+      // Update the dictionary state directly. If it's an edit, it overwrites based on tamilWord key.
+      // Note: If user changes Tamil word, it acts as a new entry. We might need to delete the old one if we want to support renaming key.
+      // For simplicity, we'll treat tamilWord as the ID. If they edit the tamil word, we remove the old one from 'editingWord' reference if it differs.
+      
+      setDictionary(prev => {
+          let newDict = [...prev];
+          
+          // If editing an existing word and the tamil word changed, remove the old entry
+          if (editingWord && editingWord.tamilWord !== word.tamilWord) {
+               newDict = newDict.filter(w => w.tamilWord !== editingWord.tamilWord);
+          }
+          
+          // Remove any existing entry with the NEW tamil word to avoid duplicates/conflict
+          newDict = newDict.filter(w => w.tamilWord !== word.tamilWord);
+          
+          // Add the new/updated word
+          newDict.push(word);
+          return newDict.sort((a, b) => a.tamilWord.localeCompare(b.tamilWord, 'ta'));
+      });
+      setIsWordModalOpen(false);
+      setEditingWord(null);
+  };
+
+  const clearFocusedWord = useCallback(() => {
+    setFocusedWord(null);
+  }, []);
+
+  const [activeTab, setActiveTab] = useState<'translation' | 'dictionary' | 'history'>('dictionary');
   
   const streamingResponse: TranslationResponse = {
     translation: streamingTranslation,
@@ -360,7 +508,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
-      <Header />
+      <Header isOnline={isOnline} />
       <main className="container mx-auto p-4 md:p-8">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           
@@ -368,12 +516,12 @@ const App: React.FC = () => {
             userInput={userInput}
             setUserInput={setUserInput}
             onTranslate={handleTranslate}
-// Fix: Pass the `handleUseDefault` function instead of the undefined `onUseDefault` variable.
             onUseDefault={handleUseDefault}
             onClear={handleClear}
             isLoading={isLoading}
             isTransliterationEnabled={isTransliterationEnabled}
             setIsTransliterationEnabled={setIsTransliterationEnabled}
+            isOnline={isOnline}
           />
           
           <OutputPanel
@@ -399,18 +547,33 @@ const App: React.FC = () => {
             lastTranslatedText={lastTranslatedText}
             onWordClick={handleWordClick}
             focusedWord={focusedWord}
-            clearFocusedWord={() => setFocusedWord(null)}
+            clearFocusedWord={clearFocusedWord}
             activeDictionaryTab={activeDictionaryTab}
             setActiveDictionaryTab={setActiveDictionaryTab}
+            onUploadDictionary={handleUploadDictionary}
+            isOnline={isOnline}
+            history={translationHistory}
+            onSelectHistoryItem={loadFromHistory}
+            onDeleteWord={handleDeleteWord}
+            onEditWord={handleEditWord}
           />
 
         </div>
       </main>
+      
+      {isWordModalOpen && (
+          <WordFormModal 
+              isOpen={isWordModalOpen}
+              onClose={() => setIsWordModalOpen(false)}
+              onSave={handleSaveWord}
+              initialData={editingWord}
+          />
+      )}
     </div>
   );
 };
 
-const Header: React.FC = () => (
+const Header: React.FC<{ isOnline: boolean }> = ({ isOnline }) => (
   <header className="bg-white/80 backdrop-blur-lg border-b border-slate-200 sticky top-0 z-10">
     <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
       <div className="flex items-center space-x-3">
@@ -419,6 +582,14 @@ const Header: React.FC = () => (
         </svg>
         <h1 className="text-2xl font-bold text-slate-800">Tamil Cultural Translator</h1>
       </div>
+      {!isOnline && (
+        <div className="bg-red-100 text-red-800 px-3 py-1 rounded-full text-sm font-medium flex items-center">
+           <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 5.636a9 9 0 010 12.728m0 0l-2.829-2.829m2.829 2.829L21 21M15.536 8.464a5 5 0 010 7.072m0 0l-2.829-2.829m-4.243 2.829a4.978 4.978 0 01-1.414-2.83m-1.414 5.658a9 9 0 01-2.167-9.238m7.824 2.167a1 1 0 111.414 1.414m-1.414-1.414L3 3m8.293 8.293l1.414 1.414" />
+           </svg>
+           Offline Mode
+        </div>
+      )}
     </div>
   </header>
 );
@@ -432,9 +603,10 @@ interface InputPanelProps {
   isLoading: boolean;
   isTransliterationEnabled: boolean;
   setIsTransliterationEnabled: (enabled: boolean) => void;
+  isOnline: boolean;
 }
 
-const InputPanel: React.FC<InputPanelProps> = ({ userInput, setUserInput, onTranslate, onUseDefault, onClear, isLoading, isTransliterationEnabled, setIsTransliterationEnabled }) => {
+const InputPanel: React.FC<InputPanelProps> = ({ userInput, setUserInput, onTranslate, onUseDefault, onClear, isLoading, isTransliterationEnabled, setIsTransliterationEnabled, isOnline }) => {
   const [transliteratedText, setTransliteratedText] = useState('');
   const [isPreviewExpanded, setIsPreviewExpanded] = useState(false);
 
@@ -511,7 +683,7 @@ const InputPanel: React.FC<InputPanelProps> = ({ userInput, setUserInput, onTran
         <button
           onClick={() => onTranslate(effectiveText)}
           disabled={isLoading || effectiveText.length === 0}
-          className="w-full sm:w-auto flex items-center justify-center px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:bg-indigo-300 disabled:cursor-not-allowed transition-all duration-300"
+          className={`w-full sm:w-auto flex items-center justify-center px-6 py-3 font-semibold rounded-lg shadow-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:bg-slate-300 disabled:cursor-not-allowed transition-all duration-300 ${isOnline ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-slate-600 text-white hover:bg-slate-700'}`}
         >
           {isLoading ? (
               <>
@@ -521,7 +693,7 @@ const InputPanel: React.FC<InputPanelProps> = ({ userInput, setUserInput, onTran
                 </svg>
                 Translating...
               </>
-            ) : 'Translate'}
+            ) : isOnline ? 'Translate' : 'Try History Match'}
         </button>
         <button 
           onClick={onUseDefault}
@@ -531,6 +703,11 @@ const InputPanel: React.FC<InputPanelProps> = ({ userInput, setUserInput, onTran
           Use Example Text
         </button>
       </div>
+      {!isOnline && (
+        <p className="mt-2 text-sm text-amber-600 italic">
+          You are offline. Clicking translate will search your local history for an exact match.
+        </p>
+      )}
       
       {isTransliterationEnabled && userInput && transliteratedText && (
         <div className="mt-4 p-3 bg-slate-50 rounded-lg border border-slate-200 transition-all animate-fade-in">
@@ -566,21 +743,28 @@ interface OutputPanelProps {
   addWordError: AddWordError | null;
   clearAddWordError: () => void;
   onAddWordManually: (word: string) => void;
-  activeTab: 'translation' | 'dictionary';
-  setActiveTab: (tab: 'translation' | 'dictionary') => void;
+  activeTab: 'translation' | 'dictionary' | 'history';
+  setActiveTab: (tab: 'translation' | 'dictionary' | 'history') => void;
   lastTranslatedText: string;
   onWordClick: (word: DictionaryWord, language: 'tamil' | 'english') => void;
   focusedWord: string | null;
   clearFocusedWord: () => void;
   activeDictionaryTab: 'tamil' | 'english';
   setActiveDictionaryTab: (tab: 'tamil' | 'english') => void;
+  onUploadDictionary: (words: DictionaryWord[]) => void;
+  isOnline: boolean;
+  history: TranslationHistoryItem[];
+  onSelectHistoryItem: (item: TranslationHistoryItem) => void;
+  onDeleteWord: (word: string) => void;
+  onEditWord: (word: DictionaryWord) => void;
 }
 
 const OutputPanel: React.FC<OutputPanelProps> = ({ 
   response, isLoading, error, hasStreamedContent, onRetry,
   dictionary, onAddWord, isAddingWord, addWordError, clearAddWordError, onAddWordManually,
   activeTab, setActiveTab, lastTranslatedText, onWordClick, focusedWord, clearFocusedWord,
-  activeDictionaryTab, setActiveDictionaryTab
+  activeDictionaryTab, setActiveDictionaryTab, onUploadDictionary, isOnline, history, onSelectHistoryItem,
+  onDeleteWord, onEditWord
 }) => {
   const [copyState, setCopyState] = useState(false);
   const [isContextExpanded, setIsContextExpanded] = useState(false);
@@ -593,7 +777,7 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
     setActiveTranslationTab('english');
   }, [response.contextAnalysis, lastTranslatedText]);
 
-  const getTabClass = (tabName: 'translation' | 'dictionary') => {
+  const getTabClass = (tabName: 'translation' | 'dictionary' | 'history') => {
     return activeTab === tabName
       ? 'text-indigo-600 border-b-2 border-indigo-600'
       : 'text-slate-500 hover:text-slate-700';
@@ -621,22 +805,52 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
 
   return (
     <div className="bg-white p-6 rounded-2xl shadow-lg border border-slate-200/50 min-h-[400px] flex flex-col">
-       <div className="flex border-b border-slate-200 mb-6">
+       <div className="flex border-b border-slate-200 mb-6 overflow-x-auto">
         <button 
           onClick={() => setActiveTab('translation')}
-          className={`px-4 py-3 font-semibold text-sm transition-colors duration-200 ${getTabClass('translation')}`}
+          className={`px-4 py-3 font-semibold text-sm transition-colors duration-200 whitespace-nowrap ${getTabClass('translation')}`}
         >
           Translation
         </button>
         <button 
           onClick={() => setActiveTab('dictionary')}
-          className={`px-4 py-3 font-semibold text-sm transition-colors duration-200 ${getTabClass('dictionary')}`}
+          className={`px-4 py-3 font-semibold text-sm transition-colors duration-200 whitespace-nowrap ${getTabClass('dictionary')}`}
         >
           Dictionary
+        </button>
+        <button 
+          onClick={() => setActiveTab('history')}
+          className={`px-4 py-3 font-semibold text-sm transition-colors duration-200 whitespace-nowrap ${getTabClass('history')}`}
+        >
+          History {history.length > 0 && `(${history.length})`}
         </button>
       </div>
 
       <div className="flex-grow overflow-hidden">
+        {activeTab === 'history' && (
+           <div className="flex flex-col h-full animate-fade-in">
+              {history.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                     <p>No recent translations found.</p>
+                  </div>
+              ) : (
+                  <ul className="space-y-3 overflow-y-auto pr-2">
+                      {history.map((item) => (
+                          <li key={item.id} className="p-4 bg-slate-50 border border-slate-200 rounded-lg hover:border-indigo-300 transition-colors cursor-pointer" onClick={() => onSelectHistoryItem(item)}>
+                              <div className="flex justify-between items-start mb-1">
+                                  <span className="text-xs text-slate-500 font-medium">{new Date(item.timestamp).toLocaleString()}</span>
+                                  <span className="text-xs text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
+                                     {item.response.contextAnalysis?.dialect || 'General Tamil'}
+                                  </span>
+                              </div>
+                              <p className="font-sans text-slate-800 font-medium line-clamp-2 mb-2">{item.originalText}</p>
+                              <p className="text-slate-600 text-sm line-clamp-2">{item.response.translation}</p>
+                          </li>
+                      ))}
+                  </ul>
+              )}
+           </div>
+        )}
         {activeTab === 'translation' && (
           <div className="flex flex-col h-full">
             {isLoading && !hasStreamedContent && <Loader message="Translating & Generating Insights" />}
@@ -799,6 +1013,10 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
             clearFocusedWord={clearFocusedWord}
             activeDictionaryTab={activeDictionaryTab}
             setActiveDictionaryTab={setActiveDictionaryTab}
+            onUploadDictionary={onUploadDictionary}
+            isOnline={isOnline}
+            onDeleteWord={onDeleteWord}
+            onEditWord={onEditWord}
           />
         )}
       </div>
@@ -806,7 +1024,7 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
   );
 };
 
-const DictionaryItem: React.FC<{ word: DictionaryWord, filter: string, activeTab: 'tamil' | 'english', isHighlighted: boolean }> = ({ word, filter, activeTab, isHighlighted }) => {
+const DictionaryItem: React.FC<{ word: DictionaryWord, filter: string, activeTab: 'tamil' | 'english', isHighlighted: boolean, onDelete: (w: string) => void, onEdit: (w: DictionaryWord) => void }> = ({ word, filter, activeTab, isHighlighted, onDelete, onEdit }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [expandedSourcesWord, setExpandedSourcesWord] = useState<string | null>(null);
 
@@ -844,13 +1062,35 @@ const DictionaryItem: React.FC<{ word: DictionaryWord, filter: string, activeTab
   return (
     <li 
       id={`dict-item-${encodeURIComponent(word.tamilWord)}`}
-      className={`p-4 bg-slate-50 border border-slate-200 rounded-lg transition-all duration-500 ${isHighlighted ? 'ring-2 ring-indigo-400 ring-offset-2 bg-indigo-50' : ''}`}
+      className={`p-4 bg-slate-50 border border-slate-200 rounded-lg transition-all duration-500 group/item ${isHighlighted ? 'ring-2 ring-indigo-400 ring-offset-2 bg-indigo-50' : ''}`}
     >
-      <h4 className="text-xl font-bold text-indigo-800">
-        <span className={isTamilPrimary ? 'font-sans' : ''}>
-          {highlightMatch(title, filter)}
-        </span>
-      </h4>
+      <div className="flex justify-between items-start">
+          <h4 className="text-xl font-bold text-indigo-800">
+            <span className={isTamilPrimary ? 'font-sans' : ''}>
+              {highlightMatch(title, filter)}
+            </span>
+          </h4>
+          <div className="flex space-x-2 opacity-0 group-hover/item:opacity-100 transition-opacity">
+             <button 
+               onClick={(e) => { e.stopPropagation(); onEdit(word); }}
+               className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-md hover:bg-indigo-50 transition-colors"
+               title="Edit Word"
+             >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+             </button>
+             <button 
+               onClick={(e) => { e.stopPropagation(); onDelete(word.tamilWord); }}
+               className="p-1.5 text-slate-400 hover:text-red-600 rounded-md hover:bg-red-50 transition-colors"
+               title="Delete Word"
+             >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+             </button>
+          </div>
+      </div>
 
       <div className="mt-2 pl-2 border-l-2 border-indigo-200 space-y-1">
         <p className="text-sm text-slate-600">
@@ -881,7 +1121,11 @@ const DictionaryItem: React.FC<{ word: DictionaryWord, filter: string, activeTab
                   </div>
                   <div className="ml-3">
                     <h3 className="text-sm font-semibold text-amber-800">Idiom Explained</h3>
-                    <p className="mt-1 text-sm text-amber-700 leading-relaxed">{word.idiomExplanation}</p>
+                    <div className="mt-1 text-sm text-amber-700 space-y-2 leading-relaxed">
+                        {word.idiomExplanation.literal && <p><strong className="font-medium text-amber-800/90">Literal:</strong> {word.idiomExplanation.literal}</p>}
+                        {word.idiomExplanation.figurative && <p><strong className="font-medium text-amber-800/90">Figurative:</strong> {word.idiomExplanation.figurative}</p>}
+                        {word.idiomExplanation.context && <p><strong className="font-medium text-amber-800/90">Context:</strong> {word.idiomExplanation.context}</p>}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -986,16 +1230,22 @@ interface DictionaryViewProps {
   clearFocusedWord: () => void;
   activeDictionaryTab: 'tamil' | 'english';
   setActiveDictionaryTab: (tab: 'tamil' | 'english') => void;
+  onUploadDictionary: (words: DictionaryWord[]) => void;
+  isOnline: boolean;
+  onDeleteWord: (word: string) => void;
+  onEditWord: (word: DictionaryWord) => void;
 }
 
 
 const DictionaryView: React.FC<DictionaryViewProps> = ({ 
   dictionary, onAddWord, isAddingWord, addWordError, clearAddWordError, onAddWordManually, 
-  focusedWord, clearFocusedWord, activeDictionaryTab, setActiveDictionaryTab 
+  focusedWord, clearFocusedWord, activeDictionaryTab, setActiveDictionaryTab, onUploadDictionary, isOnline,
+  onDeleteWord, onEditWord
 }) => {
   const [newWord, setNewWord] = useState('');
   const [filter, setFilter] = useState('');
   const [highlightedWord, setHighlightedWord] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (focusedWord) {
@@ -1005,8 +1255,8 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
         setHighlightedWord(focusedWord);
         const timer = setTimeout(() => {
           setHighlightedWord(null);
+          clearFocusedWord();
         }, 2500); // Highlight for 2.5 seconds
-        clearFocusedWord();
         return () => clearTimeout(timer);
       } else {
         // If element not found, still clear the focus state
@@ -1017,8 +1267,13 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
 
   const handleAddClick = async () => {
     await onAddWord(newWord);
-    if(!addWordError) {
-      setNewWord('');
+    if(!addWordError && isOnline) {
+      // Clear input only if successful (online mode generally implies success or error handled)
+      // If offline, the AddWordToDictionary function handles opening the modal, we can clear it there or keep it.
+      // For consistent UX, we clear it here if not blocked by error.
+       setNewWord('');
+    } else if (!isOnline) {
+       setNewWord(''); // Clear on offline manual trigger too
     }
   };
   
@@ -1045,20 +1300,120 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
     document.body.removeChild(link);
   };
 
-  const filteredDictionary = dictionary
-    .filter(d => 
-      d.tamilWord.toLowerCase().includes(filter.toLowerCase()) || 
-      d.englishWord.toLowerCase().includes(filter.toLowerCase()) ||
-      d.englishMeaning.toLowerCase().includes(filter.toLowerCase()) ||
-      (d.tamilMeaning && d.tamilMeaning.toLowerCase().includes(filter.toLowerCase()))
-    )
-    .sort((a, b) => {
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const text = e.target?.result as string;
+            const lines = text.split(/\r?\n/);
+            
+            if (lines.length < 1) {
+              alert('The selected file is empty.');
+              return;
+            }
+
+            const headerLine = lines.shift()!.trim();
+            // Remove BOM character if present
+            const header = (headerLine.startsWith('\uFEFF') ? headerLine.substring(1) : headerLine).split(',').map(h => h.trim().replace(/"/g, ''));
+            const expectedHeader = ['Tamil Word', 'English Word', 'Tamil Meaning', 'English Meaning'];
+
+            if (header.length !== expectedHeader.length || !header.every((h, i) => h === expectedHeader[i])) {
+              alert('Invalid CSV header. Please ensure the columns are: ' + expectedHeader.join(', '));
+              return;
+            }
+            
+            const uploadedWords = lines.map(line => {
+                if (!line.trim()) return null;
+                const values = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || [];
+                const cleanValues = values.map(v => v.trim().replace(/^"|"$/g, '').replace(/""/g, '"'));
+
+                if (cleanValues.length === header.length) {
+                    return {
+                        tamilWord: cleanValues[0],
+                        englishWord: cleanValues[1],
+                        tamilMeaning: cleanValues[2],
+                        englishMeaning: cleanValues[3],
+                    };
+                }
+                return null;
+            }).filter((w): w is DictionaryWord => w !== null);
+            
+            onUploadDictionary(uploadedWords);
+            alert(`${uploadedWords.length} words successfully uploaded and merged.`);
+
+        } catch (error) {
+            console.error("Error parsing CSV file:", error);
+            alert("Failed to read or parse the CSV file. Please ensure it is correctly formatted.");
+        } finally {
+            if (event.target) {
+                event.target.value = ''; // Reset file input
+            }
+        }
+    };
+    reader.onerror = () => {
+        alert("Error reading the file.");
+    };
+    reader.readAsText(file);
+  };
+
+  const { filteredDictionary, isFuzzySearch } = React.useMemo(() => {
+    const query = filter.trim().toLowerCase();
+    
+    const sortAlphabetically = (a: DictionaryWord, b: DictionaryWord) => {
       if (activeDictionaryTab === 'tamil') {
         return a.tamilWord.localeCompare(b.tamilWord, 'ta');
       } else {
         return a.englishWord.localeCompare(b.englishWord, 'en');
       }
-    });
+    };
+
+    if (!query) {
+      return { 
+        filteredDictionary: [...dictionary].sort(sortAlphabetically), 
+        isFuzzySearch: false 
+      };
+    }
+
+    const exactMatches = dictionary.filter(d => 
+      d.tamilWord.toLowerCase().includes(query) || 
+      d.englishWord.toLowerCase().includes(query) ||
+      d.englishMeaning.toLowerCase().includes(query) ||
+      (d.tamilMeaning && d.tamilMeaning.toLowerCase().includes(query))
+    );
+
+    if (exactMatches.length > 0) {
+      return { 
+        filteredDictionary: exactMatches.sort(sortAlphabetically), 
+        isFuzzySearch: false 
+      };
+    }
+
+    // Fuzzy Search
+    const fuzzyMatches = dictionary
+      .map(d => {
+        const distTamil = levenshteinDistance(d.tamilWord.toLowerCase(), query);
+        const distEnglish = levenshteinDistance(d.englishWord.toLowerCase(), query);
+        return { word: d, score: Math.min(distTamil, distEnglish) };
+      })
+      .filter(item => {
+          // Allow more errors for longer words
+          const len = Math.max(item.word.tamilWord.length, item.word.englishWord.length);
+          const maxDist = len < 5 ? 1 : len < 10 ? 2 : 3;
+          return item.score <= maxDist;
+      })
+      .sort((a, b) => a.score - b.score) // Sort by relevance (score)
+      .map(item => item.word);
+
+    return { filteredDictionary: fuzzyMatches, isFuzzySearch: true };
+
+  }, [dictionary, filter, activeDictionaryTab]);
 
   const getDictTabClass = (tabName: 'tamil' | 'english') => {
     return activeDictionaryTab === tabName
@@ -1069,7 +1424,7 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
   return (
     <div className="flex flex-col h-full animate-fade-in">
       {/* Add Word Form */}
-      <div className="mb-6 pb-6 border-b border-slate-200">
+      <div className="mb-6 pb-6 border-b border-slate-200 relative">
         <h3 className="text-lg font-semibold text-slate-700 mb-3">Add a Word</h3>
         <div className="flex items-start space-x-2">
           <input 
@@ -1079,15 +1434,15 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
               setNewWord(e.target.value);
               if (addWordError) clearAddWordError();
             }}
-            placeholder="Enter a Tamil word..."
-            className="flex-grow p-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500"
+            placeholder={isOnline ? "Enter a Tamil word..." : "Enter word to add manually..."}
+            className="flex-grow p-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100"
             disabled={isAddingWord}
             onKeyDown={(e) => { if (e.key === 'Enter') handleAddClick() }}
           />
           <button
             onClick={handleAddClick}
             disabled={isAddingWord || !newWord.trim()}
-            className="px-4 py-2 bg-indigo-600 text-white font-semibold rounded-md hover:bg-indigo-700 disabled:bg-indigo-300 flex items-center justify-center min-w-[80px] transition-colors"
+            className="px-4 py-2 bg-indigo-600 text-white font-semibold rounded-md hover:bg-indigo-700 disabled:bg-slate-300 flex items-center justify-center min-w-[80px] transition-colors"
           >
             {isAddingWord ? (
               <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -1097,6 +1452,11 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
             ) : "Add"}
           </button>
         </div>
+        {!isOnline && (
+          <div className="mt-2 text-xs text-amber-600 italic">
+             Offline Mode: Clicking "Add" will open manual entry form.
+          </div>
+        )}
         {addWordError && (
           <div className="mt-2 p-3 bg-red-50 border-l-4 border-red-400 rounded-r-lg">
             <p className="text-sm font-medium text-red-800">{addWordError.message}</p>
@@ -1116,69 +1476,204 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
       <div className="flex-grow flex flex-col overflow-hidden">
         <div className="flex justify-between items-center mb-2 flex-shrink-0 gap-2">
           <h3 className="text-lg font-semibold text-slate-700">My Dictionary ({dictionary.length})</h3>
-           <div className="flex items-center gap-2">
-              <div className="relative">
-                <input
-                  type="text"
-                  placeholder="Filter dictionary..."
-                  value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
-                  className="w-full sm:w-48 pl-4 pr-8 py-1.5 border border-slate-300 rounded-full text-sm focus:ring-2 focus:ring-indigo-400"
-                />
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-              </div>
-              <button
+          <div className="flex space-x-2">
+            <button
                 onClick={handleDownload}
                 disabled={dictionary.length === 0}
-                title="Download Dictionary (CSV)"
-                className="p-2 text-slate-500 rounded-full hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                aria-label="Download Dictionary"
-              >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                  </svg>
-              </button>
-            </div>
-        </div>
-
-        <div className="flex-shrink-0 mb-4">
-            <div className="inline-flex rounded-md shadow-sm" role="group">
-              <button type="button" onClick={() => setActiveDictionaryTab('tamil')} className={`px-4 py-2 text-sm font-medium rounded-l-lg border border-slate-200 transition-colors ${getDictTabClass('tamil')}`}>
-                Tamil-English
-              </button>
-              <button type="button" onClick={() => setActiveDictionaryTab('english')} className={`px-4 py-2 text-sm font-medium rounded-r-md border-t border-b border-r border-slate-200 transition-colors ${getDictTabClass('english')}`}>
-                English-Tamil
-              </button>
-            </div>
-        </div>
-
-
-        <div className="overflow-y-auto flex-grow -mr-3 pr-3">
-          {filteredDictionary.length > 0 ? (
-            <ul className="space-y-3">
-              {filteredDictionary.map(word => (
-                <DictionaryItem key={word.tamilWord} word={word} filter={filter} activeTab={activeDictionaryTab} isHighlighted={highlightedWord === word.tamilWord} />
-              ))}
-            </ul>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full text-center text-slate-400">
-               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-16 h-16 mb-4">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
+                className="p-2 text-slate-500 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 rounded-full transition-colors disabled:opacity-50"
+                title="Download Dictionary CSV"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                 </svg>
-              <p className="font-semibold text-slate-600">
-                {dictionary.length > 0 ? "No matching words found" : "Your dictionary is empty"}
-              </p>
-              <p className="text-sm mt-1">
-                {dictionary.length > 0 ? "Try a different search term." : "Add a word above to get started!"}
-              </p>
-            </div>
-          )}
+            </button>
+            <button
+                onClick={handleUploadClick}
+                className="p-2 text-slate-500 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 rounded-full transition-colors"
+                title="Upload Dictionary CSV"
+            >
+                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+            </button>
+             {/* Hidden file input */}
+             <input 
+                type="file" 
+                ref={fileInputRef}
+                onChange={handleFileChange}
+                accept=".csv"
+                className="hidden"
+            />
+          </div>
         </div>
+
+        <div className="mb-4 flex items-center space-x-2 flex-shrink-0">
+            <div className="relative flex-grow">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <svg className="h-5 w-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                        <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+                    </svg>
+                </div>
+                <input
+                    type="text"
+                    className="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-md leading-5 bg-white placeholder-slate-500 focus:outline-none focus:placeholder-slate-400 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm transition duration-150 ease-in-out"
+                    placeholder="Search dictionary..."
+                    value={filter}
+                    onChange={(e) => setFilter(e.target.value)}
+                />
+            </div>
+            <div className="flex rounded-md shadow-sm">
+                <button
+                    onClick={() => setActiveDictionaryTab('tamil')}
+                    className={`px-3 py-2 text-sm font-medium rounded-l-md border border-slate-300 transition-colors focus:z-10 focus:ring-2 focus:ring-indigo-500 focus:text-indigo-700 ${getDictTabClass('tamil')}`}
+                >
+                    Tamil
+                </button>
+                <button
+                    onClick={() => setActiveDictionaryTab('english')}
+                    className={`px-3 py-2 text-sm font-medium rounded-r-md border border-l-0 border-slate-300 transition-colors focus:z-10 focus:ring-2 focus:ring-indigo-500 focus:text-indigo-700 ${getDictTabClass('english')}`}
+                >
+                    English
+                </button>
+            </div>
+        </div>
+        
+        {isFuzzySearch && filteredDictionary.length > 0 && (
+          <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded-md text-sm text-amber-800 flex items-center">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+            </svg>
+            No exact matches found. Showing similar words for "{filter}".
+          </div>
+        )}
+
+        {dictionary.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-32 text-slate-500 bg-slate-50 rounded-lg border border-slate-200/60 border-dashed">
+                <p>Dictionary is empty.</p>
+                <p className="text-sm mt-1">Add words above or upload a CSV.</p>
+            </div>
+        ) : filteredDictionary.length === 0 ? (
+             <div className="flex flex-col items-center justify-center h-32 text-slate-500 bg-slate-50 rounded-lg border border-slate-200/60 border-dashed">
+                <p>No matches found.</p>
+            </div>
+        ) : (
+          <ul className="overflow-y-auto space-y-3 pr-2 pb-2 flex-grow">
+            {filteredDictionary.map((word) => (
+              <DictionaryItem 
+                key={word.tamilWord} 
+                word={word} 
+                filter={filter} 
+                activeTab={activeDictionaryTab} 
+                isHighlighted={highlightedWord === word.tamilWord}
+                onDelete={onDeleteWord}
+                onEdit={onEditWord}
+              />
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );
+};
+
+
+interface WordFormModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSave: (word: DictionaryWord) => void;
+  initialData?: DictionaryWord | null;
+}
+
+const WordFormModal: React.FC<WordFormModalProps> = ({ isOpen, onClose, onSave, initialData }) => {
+    const [formData, setFormData] = useState<DictionaryWord>({
+        tamilWord: '',
+        englishWord: '',
+        tamilMeaning: '',
+        englishMeaning: ''
+    });
+
+    useEffect(() => {
+        if (initialData) {
+            setFormData(initialData);
+        } else {
+             setFormData({ tamilWord: '', englishWord: '', tamilMeaning: '', englishMeaning: '' });
+        }
+    }, [initialData]);
+
+    if (!isOpen) return null;
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        onSave(formData);
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                <div className="bg-indigo-600 px-6 py-4 flex justify-between items-center">
+                    <h3 className="text-lg font-bold text-white">{initialData ? 'Edit Word' : 'Add Manual Entry'}</h3>
+                    <button onClick={onClose} className="text-indigo-100 hover:text-white focus:outline-none">
+                         <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                         </svg>
+                    </button>
+                </div>
+                <form onSubmit={handleSubmit} className="p-6 space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Tamil Word *</label>
+                        <input 
+                            type="text" 
+                            required
+                            className="w-full p-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500"
+                            value={formData.tamilWord}
+                            onChange={e => setFormData({...formData, tamilWord: e.target.value})}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">English Word/Translation *</label>
+                        <input 
+                            type="text" 
+                            required
+                            className="w-full p-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500"
+                            value={formData.englishWord}
+                            onChange={e => setFormData({...formData, englishWord: e.target.value})}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Tamil Meaning</label>
+                        <textarea 
+                            className="w-full p-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 h-20 resize-none"
+                            value={formData.tamilMeaning}
+                            onChange={e => setFormData({...formData, tamilMeaning: e.target.value})}
+                        />
+                    </div>
+                     <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">English Meaning</label>
+                        <textarea 
+                            className="w-full p-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 h-20 resize-none"
+                            value={formData.englishMeaning}
+                            onChange={e => setFormData({...formData, englishMeaning: e.target.value})}
+                        />
+                    </div>
+                    <div className="pt-4 flex justify-end space-x-3">
+                         <button 
+                            type="button" 
+                            onClick={onClose}
+                            className="px-4 py-2 text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md font-medium transition-colors"
+                         >
+                            Cancel
+                         </button>
+                         <button 
+                            type="submit" 
+                            className="px-4 py-2 text-white bg-indigo-600 hover:bg-indigo-700 rounded-md font-medium transition-colors shadow-sm"
+                         >
+                            Save
+                         </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
 };
 
 export default App;

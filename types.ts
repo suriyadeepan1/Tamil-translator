@@ -46,12 +46,23 @@ export interface TranslationResponse {
   translation: string;
   idiom?: {
     phrase: string;
-    explanation: string;
+    explanation: {
+      literal: string;
+      figurative: string;
+      context?: string;
+    };
     translation: string;
   };
   addendum: WordAddendum[];
   contextAnalysis: ContextAnalysis;
   sources?: { uri: string; title: string; }[];
+}
+
+export interface TranslationHistoryItem {
+  id: string;
+  timestamp: number;
+  originalText: string;
+  response: TranslationResponse;
 }
 
 export interface ApiError {
@@ -74,7 +85,11 @@ export interface DictionaryWord {
   origin?: string;
   etymology?: EtymologyStep[];
   sources?: { uri: string; title: string; }[];
-  idiomExplanation?: string;
+  idiomExplanation?: {
+    literal: string;
+    figurative: string;
+    context?: string;
+  };
 }
 
 export interface DictionaryEntryResponse {
