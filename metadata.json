@@ -1,5 +1,5 @@
 {
   "name": "Tamil Translator",
-  "description": "An AI-powered application to translate Tamil text to English with a deep understanding of regional dialects and cultural nuances. It provides a Auto-transliterate for typing in English to Tamil, a customisable dictionary and addendum explaining the origin, meaning, and variations of key Tamil words.",
+  "description": "Sophisticated, AI-powered translation tool designed specifically to handle the nuances, dialects, and cultural depth of the Tamil language, moving far beyond simple literal translation. It features include - Auto-transliterate for typing in English to Tamil, a Interactive \"Living\" Dictionary and addendum explaining the origin, meaning and variations of key Tamil words.",
   "requestFramePermissions": []
 }

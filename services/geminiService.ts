@@ -28,7 +28,8 @@ const extractAndParseJson = (text: string): any => {
   let contentToParse = text;
 
   // Prioritize markdown block if it exists
-  const markdownMatch = text.match(/```json\n([\s\S]*?)\n```/);
+  // Updated regex to handle optional 'json' and handle lack of newlines inside the block
+  const markdownMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
   if (markdownMatch && markdownMatch[1]) {
     contentToParse = markdownMatch[1];
   }
@@ -174,27 +175,39 @@ export const streamTranslationWithAddendum = async (
     let buffer = '';
     let completed = false;
     for await (const chunk of responseStream) {
-      // FIX: The `.text` accessor on a `GenerateContentResponse` object is a property, not a method.
-      // Accessing it as `chunk.text()` causes a "not callable" error.
-      buffer += chunk.text;
+      // SAFE ACCESS: Ensure text is not undefined before appending.
+      const chunkText = chunk.text || '';
+      buffer += chunkText;
+
       let newlineIndex;
       while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.substring(0, newlineIndex).trim();
+        let line = buffer.substring(0, newlineIndex).trim();
         buffer = buffer.substring(newlineIndex + 1);
-        if (line) {
-          try {
+
+        if (!line) continue;
+
+        // Ignore markdown code block delimiters if they appear as a separate line
+        if (line.startsWith('```')) continue;
+
+        // Handle occasional model behavior where it puts a comma at end of line (array style)
+        if (line.endsWith(',')) {
+          line = line.slice(0, -1);
+        }
+
+        try {
             const parsed = JSON.parse(line);
             if (parsed.type && parsed.data) {
                 if (parsed.type === 'end') {
                     completed = true;
+                    // FIX: Avoid shadowing 'chunk' variable
                     const groundingChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks;
                     let sources: { uri: string; title: string; }[] = [];
                     if (groundingChunks) {
                       const uniqueSources = new Map<string, string>();
-                      groundingChunks.forEach((chunk: any) => {
-                        if (chunk.web && chunk.web.uri) {
-                          if (!uniqueSources.has(chunk.web.uri)) {
-                            uniqueSources.set(chunk.web.uri, chunk.web.title || chunk.web.uri);
+                      groundingChunks.forEach((gChunk: any) => {
+                        if (gChunk.web && gChunk.web.uri) {
+                          if (!uniqueSources.has(gChunk.web.uri)) {
+                            uniqueSources.set(gChunk.web.uri, gChunk.web.title || gChunk.web.uri);
                           }
                         }
                       });
@@ -207,11 +220,30 @@ export const streamTranslationWithAddendum = async (
                      onUpdate({ type: parsed.type, payload: parsed.data });
                 }
             }
-          } catch (e) {
-            console.warn("Could not parse streaming JSON line:", line, e);
-          }
+        } catch (e) {
+            // Only warn if the line looks like it might be data (not just a closing bracket)
+            if (line !== ']' && line !== '}' && line !== '[') {
+              console.warn("Could not parse streaming JSON line:", line, e);
+            }
         }
       }
+    }
+
+    // Process any remaining buffer content that might not end with a newline
+    if (buffer.trim()) {
+       let line = buffer.trim();
+       if (line.startsWith('```')) line = ''; // ignore trailing markdown
+       if (line) {
+         if (line.endsWith(',')) line = line.slice(0, -1);
+         try {
+           const parsed = JSON.parse(line);
+           if (parsed.type && parsed.data && parsed.type !== 'end') {
+              onUpdate({ type: parsed.type, payload: parsed.data });
+           }
+         } catch(e) {
+           console.warn("Could not parse final buffer line:", line);
+         }
+       }
     }
     
     // If the stream ends without a proper 'end' signal, force completion to avoid an infinite loading state.
@@ -306,8 +338,7 @@ export const getDictionaryEntry = async (tamilWord: string): Promise<DictionaryE
     if (!response.text) {
         throw new Error('The AI returned an empty response for the dictionary entry.');
     }
-    // FIX: The `.text` accessor on a `GenerateContentResponse` object is a property, not a method.
-    // Accessing it as `response.text()` causes a "not callable" error.
+    
     const parsedResponse = extractAndParseJson(response.text);
 
     if (parsedResponse.englishWord && parsedResponse.tamilMeaning && parsedResponse.englishMeaning) {
@@ -355,8 +386,7 @@ export const getTamilMeaning = async (tamilWord: string): Promise<string> => {
     if (!response.text) {
         throw new Error('The AI returned an empty response for the Tamil meaning.');
     }
-    // FIX: The `.text` accessor on a `GenerateContentResponse` object is a property, not a method.
-    // Accessing it as `response.text()` causes a "not callable" error.
+
     const parsedResponse = extractAndParseJson(response.text);
 
     if (parsedResponse.tamilMeaning && typeof parsedResponse.tamilMeaning === 'string') {

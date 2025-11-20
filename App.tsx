@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { streamTranslationWithAddendum, getDictionaryEntry, getTamilMeaning } from './services/geminiService';
 import { TranslationResponse, ApiError, DictionaryWord, ContextAnalysis, WordAddendum, RelatedWord, DialectVariation, TranslationHistoryItem } from './types';
@@ -9,6 +8,7 @@ import WordCard from './components/WordCard';
 import { StreamedUpdate } from './services/geminiService';
 import HighlightedText from './components/HighlightedText';
 import { defaultDictionary } from './data/dictionary';
+import TamilVirtualKeyboard from './components/TamilVirtualKeyboard';
 
 interface AddWordError {
   message: string;
@@ -216,6 +216,13 @@ const App: React.FC = () => {
       localStorage.setItem('translationHistory', JSON.stringify(updated));
       return updated;
     });
+  }, []);
+
+  const handleClearHistory = useCallback(() => {
+    if (window.confirm("Are you sure you want to delete all translation history? This action cannot be undone.")) {
+        setTranslationHistory([]);
+        localStorage.removeItem('translationHistory');
+    }
   }, []);
 
   const handleStreamUpdate = useCallback(async (update: StreamedUpdate) => {
@@ -556,6 +563,7 @@ const App: React.FC = () => {
             onSelectHistoryItem={loadFromHistory}
             onDeleteWord={handleDeleteWord}
             onEditWord={handleEditWord}
+            onClearHistory={handleClearHistory}
           />
 
         </div>
@@ -609,6 +617,8 @@ interface InputPanelProps {
 const InputPanel: React.FC<InputPanelProps> = ({ userInput, setUserInput, onTranslate, onUseDefault, onClear, isLoading, isTransliterationEnabled, setIsTransliterationEnabled, isOnline }) => {
   const [transliteratedText, setTransliteratedText] = useState('');
   const [isPreviewExpanded, setIsPreviewExpanded] = useState(false);
+  const [showKeyboard, setShowKeyboard] = useState(false);
+  const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (isTransliterationEnabled && userInput) {
@@ -638,30 +648,72 @@ const InputPanel: React.FC<InputPanelProps> = ({ userInput, setUserInput, onTran
     setUserInput(sanitizedText);
   };
 
+  const handleVirtualKeyPress = (char: string) => {
+    if (textAreaRef.current) {
+      const start = textAreaRef.current.selectionStart;
+      const end = textAreaRef.current.selectionEnd;
+      const text = userInput;
+      const newText = text.substring(0, start) + char + text.substring(end);
+      setUserInput(newText);
+      
+      // Must restore focus and cursor position after state update
+      setTimeout(() => {
+        if (textAreaRef.current) {
+            textAreaRef.current.selectionStart = textAreaRef.current.selectionEnd = start + char.length;
+            textAreaRef.current.focus();
+        }
+      }, 0);
+    } else {
+        setUserInput(userInput + char);
+    }
+  };
+
   return (
     <div className="bg-white p-6 rounded-2xl shadow-lg border border-slate-200/50">
       <h2 className="text-xl font-semibold mb-4 text-slate-700">Enter Tamil Text</h2>
       <div className="relative group">
         <textarea
+          ref={textAreaRef}
           value={userInput}
           onChange={handleInputChange}
           placeholder={isTransliterationEnabled ? "Type in English (e.g., 'vanakkam')" : "Type or paste Tamil text here..."}
-          className="w-full h-48 p-4 pr-10 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-shadow duration-200 resize-none"
+          className="w-full h-48 p-4 pr-12 pb-10 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-shadow duration-200 resize-none"
           disabled={isLoading}
         />
-        {userInput.length > 0 && !isLoading && (
-          <button
-            onClick={onClear}
-            title="Clear text"
-            className="absolute top-3 right-3 p-1 text-slate-400 rounded-full hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500 transition-all"
-            aria-label="Clear text"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        )}
+        
+        <div className="absolute bottom-3 right-3 flex space-x-2">
+            <button
+                onClick={() => setShowKeyboard(!showKeyboard)}
+                title="Toggle Tamil Keyboard"
+                className={`p-1.5 rounded-md transition-colors ${showKeyboard ? 'bg-indigo-100 text-indigo-600' : 'text-slate-400 hover:bg-slate-100 hover:text-slate-600'}`}
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+            </button>
+
+            {userInput.length > 0 && !isLoading && (
+            <button
+                onClick={onClear}
+                title="Clear text"
+                className="p-1.5 text-slate-400 rounded-md hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500 transition-all"
+                aria-label="Clear text"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                 <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+            </button>
+            )}
+        </div>
       </div>
+      
+      {showKeyboard && (
+        <TamilVirtualKeyboard 
+            onKeyPress={handleVirtualKeyPress} 
+            onClose={() => setShowKeyboard(false)}
+        />
+      )}
+
       <div className="mt-2 flex justify-between items-center">
         <div className="relative group">
           <label htmlFor="transliterate-toggle" className="flex items-center cursor-pointer">
@@ -757,6 +809,7 @@ interface OutputPanelProps {
   onSelectHistoryItem: (item: TranslationHistoryItem) => void;
   onDeleteWord: (word: string) => void;
   onEditWord: (word: DictionaryWord) => void;
+  onClearHistory: () => void;
 }
 
 const OutputPanel: React.FC<OutputPanelProps> = ({ 
@@ -764,7 +817,7 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
   dictionary, onAddWord, isAddingWord, addWordError, clearAddWordError, onAddWordManually,
   activeTab, setActiveTab, lastTranslatedText, onWordClick, focusedWord, clearFocusedWord,
   activeDictionaryTab, setActiveDictionaryTab, onUploadDictionary, isOnline, history, onSelectHistoryItem,
-  onDeleteWord, onEditWord
+  onDeleteWord, onEditWord, onClearHistory
 }) => {
   const [copyState, setCopyState] = useState(false);
   const [isContextExpanded, setIsContextExpanded] = useState(false);
@@ -829,6 +882,16 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
       <div className="flex-grow overflow-hidden">
         {activeTab === 'history' && (
            <div className="flex flex-col h-full animate-fade-in">
+               {history.length > 0 && (
+                    <div className="flex justify-end mb-4">
+                        <button 
+                            onClick={onClearHistory}
+                            className="text-xs text-red-600 hover:text-red-800 hover:bg-red-50 px-3 py-1.5 rounded-md transition-colors font-medium border border-transparent hover:border-red-200"
+                        >
+                            Clear All History
+                        </button>
+                    </div>
+               )}
               {history.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-full text-slate-400">
                      <p>No recent translations found.</p>
@@ -915,41 +978,47 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
                   </div>
 
                   <div className="flex-grow overflow-y-auto pt-6 -mr-3 pr-3">
-                     {activeTranslationTab === 'english' && response.translation && (
-                        <div>
-                          <div className="flex items-center justify-between mb-3">
-                            <h2 className="text-xl font-semibold text-slate-700">English Translation</h2>
-                            <button
-                              onClick={handleCopy}
-                              className="flex items-center space-x-2 px-3 py-1.5 text-sm font-medium bg-slate-100 text-slate-600 rounded-md hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all disabled:opacity-50"
-                              disabled={copyState || !response.translation}
-                            >
-                              {copyState ? (
-                                <>
-                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-green-500" viewBox="0 0 20 20" fill="currentColor">
-                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                  </svg>
-                                  <span>Copied!</span>
-                                </>
-                              ) : (
-                                <>
-                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                  </svg>
-                                  <span>Copy</span>
-                                </>
-                              )}
-                            </button>
+                     {activeTranslationTab === 'english' && (
+                        response.translation ? (
+                          <div>
+                            <div className="flex items-center justify-between mb-3">
+                              <h2 className="text-xl font-semibold text-slate-700">English Translation</h2>
+                              <button
+                                onClick={handleCopy}
+                                className="flex items-center space-x-2 px-3 py-1.5 text-sm font-medium bg-slate-100 text-slate-600 rounded-md hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all disabled:opacity-50"
+                                disabled={copyState || !response.translation}
+                              >
+                                {copyState ? (
+                                  <>
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-green-500" viewBox="0 0 20 20" fill="currentColor">
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                    <span>Copied!</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                    </svg>
+                                    <span>Copy</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                            <div className="text-slate-600 leading-relaxed bg-slate-50 p-4 rounded-lg" style={{ whiteSpace: 'pre-wrap' }}>
+                                <HighlightedText
+                                    text={response.translation}
+                                    dictionary={dictionary}
+                                    onWordClick={(word) => onWordClick(word, 'english')}
+                                    language="english"
+                                />
+                            </div>
                           </div>
-                          <div className="text-slate-600 leading-relaxed bg-slate-50 p-4 rounded-lg" style={{ whiteSpace: 'pre-wrap' }}>
-                              <HighlightedText
-                                  text={response.translation}
-                                  dictionary={dictionary}
-                                  onWordClick={(word) => onWordClick(word, 'english')}
-                                  language="english"
-                              />
-                          </div>
-                        </div>
+                        ) : (
+                           <div className="p-8 text-center text-slate-400 italic animate-pulse">
+                              Generating translation...
+                           </div>
+                        )
                       )}
 
                       {activeTranslationTab === 'original' && lastTranslatedText && (
@@ -1527,13 +1596,13 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
                     onClick={() => setActiveDictionaryTab('tamil')}
                     className={`px-3 py-2 text-sm font-medium rounded-l-md border border-slate-300 transition-colors focus:z-10 focus:ring-2 focus:ring-indigo-500 focus:text-indigo-700 ${getDictTabClass('tamil')}`}
                 >
-                    Tamil
+                    Tamil - English
                 </button>
                 <button
                     onClick={() => setActiveDictionaryTab('english')}
                     className={`px-3 py-2 text-sm font-medium rounded-r-md border border-l-0 border-slate-300 transition-colors focus:z-10 focus:ring-2 focus:ring-indigo-500 focus:text-indigo-700 ${getDictTabClass('english')}`}
                 >
-                    English
+                    English - Tamil
                 </button>
             </div>
         </div>
