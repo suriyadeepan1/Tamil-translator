@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { WordAddendum } from '../types';
 import EtymologyTimeline from './EtymologyTimeline';
@@ -54,29 +53,41 @@ const WordCard: React.FC<WordCardProps> = ({ wordData }) => {
         <div>
           <strong className="block text-sm font-semibold text-slate-500 uppercase tracking-wider">Origin & Background</strong>
           <p className="mt-1">{wordData.origin}</p>
-          {wordData.etymology && wordData.etymology.length > 0 && (
+          {Array.isArray(wordData.etymology) && wordData.etymology.length > 0 && (
             <div className="mt-4 pt-4 border-t border-slate-200/60">
               <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Etymological Journey</h4>
               <EtymologyTimeline steps={wordData.etymology} />
             </div>
           )}
         </div>
-        {wordData.relatedWords && wordData.relatedWords.length > 0 && (
+        {Array.isArray(wordData.relatedWords) && wordData.relatedWords.length > 0 && (
           <div className="pt-4 border-t border-slate-200/60">
             <strong className="block text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3">Related Words</strong>
             <div className="flex flex-wrap gap-3">
-              {wordData.relatedWords.map((related, index) => (
-                <div key={index} className="relative group">
-                  <span className="cursor-default flex items-center gap-2 px-3 py-1.5 bg-sky-100 text-sky-800 rounded-full text-sm font-medium">
-                    <span className="font-sans text-base">{related.tamilWord}</span>
-                    <span>({related.word})</span>
-                  </span>
-                  <div className="absolute bottom-full z-10 mb-2 left-1/2 -translate-x-1/2 w-max max-w-xs bg-slate-800 text-white text-xs rounded-md py-1.5 px-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none shadow-lg">
-                    {related.reason}
-                    <svg className="absolute text-slate-800 h-2 w-full left-0 top-full" x="0px" y="0px" viewBox="0 0 255 255"><polygon className="fill-current" points="0,0 127.5,127.5 255,0"/></svg>
+              {wordData.relatedWords.map((related, index) => {
+                const totalWords = wordData.relatedWords!.length;
+                let tooltipPositionClass = 'left-1/2 -translate-x-1/2';
+                if (totalWords > 1) {
+                  if (index === 0) {
+                    tooltipPositionClass = 'left-0';
+                  } else if (index === totalWords - 1) {
+                    tooltipPositionClass = 'right-0';
+                  }
+                }
+
+                return (
+                  <div key={index} className="relative group">
+                    <span className="cursor-default flex items-center gap-2 px-3 py-1.5 bg-sky-100 text-sky-800 rounded-full text-sm font-medium">
+                      <span className="font-sans text-base">{related.tamilWord}</span>
+                      <span>({related.word})</span>
+                    </span>
+                    <div className={`absolute bottom-full z-10 mb-2 w-max max-w-xs bg-slate-800 text-white text-xs rounded-md py-1.5 px-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none shadow-lg ${tooltipPositionClass}`}>
+                      {related.reason}
+                      <svg className="absolute text-slate-800 h-2 w-full left-0 top-full" x="0px" y="0px" viewBox="0 0 255 255"><polygon className="fill-current" points="0,0 127.5,127.5 255,0"/></svg>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

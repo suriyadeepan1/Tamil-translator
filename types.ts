@@ -1,4 +1,3 @@
-
 export interface RelatedWord {
   word: string;
   tamilWord: string;
@@ -56,13 +55,6 @@ export interface TranslationResponse {
   addendum: WordAddendum[];
   contextAnalysis: ContextAnalysis;
   sources?: { uri: string; title: string; }[];
-}
-
-export interface TranslationHistoryItem {
-  id: string;
-  timestamp: number;
-  originalText: string;
-  response: TranslationResponse;
 }
 
 export interface ApiError {

@@ -1,6 +1,7 @@
+
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { streamTranslationWithAddendum, getDictionaryEntry, getTamilMeaning } from './services/geminiService';
-import { TranslationResponse, ApiError, DictionaryWord, ContextAnalysis, WordAddendum, RelatedWord, DialectVariation, TranslationHistoryItem } from './types';
+import { TranslationResponse, ApiError, DictionaryWord, ContextAnalysis, WordAddendum, RelatedWord, DialectVariation } from './types';
 import Loader from './components/Loader';
 import ErrorDisplay from './components/ErrorDisplay';
 import { transliterate } from './services/transliteration';
@@ -74,47 +75,13 @@ const App: React.FC = () => {
   const [isWordModalOpen, setIsWordModalOpen] = useState(false);
   const [editingWord, setEditingWord] = useState<DictionaryWord | null>(null);
 
-  // History State
-  const [translationHistory, setTranslationHistory] = useState<TranslationHistoryItem[]>([]);
-
   // Ref to hold the latest dictionary state for use in stable callbacks
   const dictionaryRef = useRef(dictionary);
   useEffect(() => {
     dictionaryRef.current = dictionary;
   }, [dictionary]);
-
-  // Ref to hold latest streaming data to save to history on completion
-  const currentStreamRef = useRef<{
-    translation: string;
-    context: ContextAnalysis | null;
-    addendum: WordAddendum[];
-    idiom: TranslationResponse['idiom'] | null;
-    sources: { uri: string; title: string; }[];
-  }>({ translation: '', context: null, addendum: [], idiom: null, sources: [] });
-
-  useEffect(() => {
-    currentStreamRef.current = {
-      translation: streamingTranslation,
-      context: streamingContext,
-      addendum: streamingAddendum,
-      idiom: streamingIdiom,
-      sources: streamingSources
-    };
-  }, [streamingTranslation, streamingContext, streamingAddendum, streamingIdiom, streamingSources]);
   
   const defaultText = `மரியாதை என்பது கொடுக்கல் வாங்கல் போன்றது. நீ மற்றவர்களுக்கு கொடுத்தால் தான், உனக்கு மரியாதை கிடைக்கும்.`;
-
-  // Load History from localStorage
-  useEffect(() => {
-    try {
-      const storedHistory = localStorage.getItem('translationHistory');
-      if (storedHistory) {
-        setTranslationHistory(JSON.parse(storedHistory));
-      }
-    } catch (e) {
-      console.error("Failed to load translation history", e);
-    }
-  }, []);
 
   // Load and merge dictionary from localStorage on initial render
   useEffect(() => {
@@ -202,29 +169,6 @@ const App: React.FC = () => {
     });
   }, []);
 
-  const addToHistory = useCallback((text: string, response: TranslationResponse) => {
-    const newItem: TranslationHistoryItem = {
-      id: Date.now().toString(),
-      timestamp: Date.now(),
-      originalText: text,
-      response: response
-    };
-
-    setTranslationHistory(prev => {
-      // Keep only the last 20 items to avoid localStorage limits
-      const updated = [newItem, ...prev].slice(0, 20);
-      localStorage.setItem('translationHistory', JSON.stringify(updated));
-      return updated;
-    });
-  }, []);
-
-  const handleClearHistory = useCallback(() => {
-    if (window.confirm("Are you sure you want to delete all translation history? This action cannot be undone.")) {
-        setTranslationHistory([]);
-        localStorage.removeItem('translationHistory');
-    }
-  }, []);
-
   const handleStreamUpdate = useCallback(async (update: StreamedUpdate) => {
     try {
       setHasStreamedContent(true);
@@ -284,17 +228,6 @@ const App: React.FC = () => {
           break;
         case 'complete':
           setIsLoading(false);
-          // Save to history on completion
-          const finalData = currentStreamRef.current;
-          if (finalData.translation && finalData.context) {
-            addToHistory(lastTranslatedText, {
-              translation: finalData.translation,
-              contextAnalysis: finalData.context,
-              addendum: finalData.addendum,
-              idiom: finalData.idiom || undefined,
-              sources: finalData.sources
-            });
-          }
           break;
         case 'error':
           setError(update.payload as ApiError);
@@ -310,20 +243,7 @@ const App: React.FC = () => {
       });
       setIsLoading(false);
     }
-  }, [updateDictionary, lastTranslatedText, addToHistory]);
-
-  const loadFromHistory = (item: TranslationHistoryItem) => {
-    setUserInput(item.originalText);
-    setLastTranslatedText(item.originalText);
-    setStreamingTranslation(item.response.translation);
-    setStreamingContext(item.response.contextAnalysis);
-    setStreamingAddendum(item.response.addendum);
-    setStreamingIdiom(item.response.idiom || null);
-    setStreamingSources(item.response.sources || []);
-    setHasStreamedContent(true);
-    setActiveTab('translation');
-    setError(null);
-  };
+  }, [updateDictionary]);
 
   const handleTranslate = useCallback(async (textToTranslate: string) => {
     const trimmedText = textToTranslate.trim();
@@ -336,21 +256,13 @@ const App: React.FC = () => {
       return;
     }
 
-    // Offline handling
     if (!isOnline) {
-      // Check history for exact match
-      const cached = translationHistory.find(t => t.originalText.trim() === trimmedText);
-      if (cached) {
-        loadFromHistory(cached);
-        return;
-      } else {
-        setError({
-          title: "You are Offline",
-          message: "Cannot translate new text while offline. Please check your internet connection or view History for past translations.",
-          isRetryable: false
-        });
-        return;
-      }
+      setError({
+        title: "You are Offline",
+        message: "Cannot translate new text while offline. Please check your internet connection.",
+        isRetryable: false
+      });
+      return;
     }
 
     // Reset state for new translation
@@ -371,7 +283,7 @@ const App: React.FC = () => {
       dictionary.map(d => ({ tamilWord: d.tamilWord, englishMeaning: d.englishMeaning })),
       handleStreamUpdate
     );
-  }, [dictionary, handleStreamUpdate, isOnline, translationHistory]);
+  }, [dictionary, handleStreamUpdate, isOnline]);
 
   const handleUseDefault = () => {
     setUserInput(defaultText);
@@ -503,7 +415,7 @@ const App: React.FC = () => {
     setFocusedWord(null);
   }, []);
 
-  const [activeTab, setActiveTab] = useState<'translation' | 'dictionary' | 'history'>('dictionary');
+  const [activeTab, setActiveTab] = useState<'translation' | 'dictionary'>('dictionary');
   
   const streamingResponse: TranslationResponse = {
     translation: streamingTranslation,
@@ -559,11 +471,8 @@ const App: React.FC = () => {
             setActiveDictionaryTab={setActiveDictionaryTab}
             onUploadDictionary={handleUploadDictionary}
             isOnline={isOnline}
-            history={translationHistory}
-            onSelectHistoryItem={loadFromHistory}
             onDeleteWord={handleDeleteWord}
             onEditWord={handleEditWord}
-            onClearHistory={handleClearHistory}
           />
 
         </div>
@@ -745,7 +654,7 @@ const InputPanel: React.FC<InputPanelProps> = ({ userInput, setUserInput, onTran
                 </svg>
                 Translating...
               </>
-            ) : isOnline ? 'Translate' : 'Try History Match'}
+            ) : 'Translate'}
         </button>
         <button 
           onClick={onUseDefault}
@@ -755,11 +664,6 @@ const InputPanel: React.FC<InputPanelProps> = ({ userInput, setUserInput, onTran
           Use Example Text
         </button>
       </div>
-      {!isOnline && (
-        <p className="mt-2 text-sm text-amber-600 italic">
-          You are offline. Clicking translate will search your local history for an exact match.
-        </p>
-      )}
       
       {isTransliterationEnabled && userInput && transliteratedText && (
         <div className="mt-4 p-3 bg-slate-50 rounded-lg border border-slate-200 transition-all animate-fade-in">
@@ -795,8 +699,8 @@ interface OutputPanelProps {
   addWordError: AddWordError | null;
   clearAddWordError: () => void;
   onAddWordManually: (word: string) => void;
-  activeTab: 'translation' | 'dictionary' | 'history';
-  setActiveTab: (tab: 'translation' | 'dictionary' | 'history') => void;
+  activeTab: 'translation' | 'dictionary';
+  setActiveTab: (tab: 'translation' | 'dictionary') => void;
   lastTranslatedText: string;
   onWordClick: (word: DictionaryWord, language: 'tamil' | 'english') => void;
   focusedWord: string | null;
@@ -805,32 +709,31 @@ interface OutputPanelProps {
   setActiveDictionaryTab: (tab: 'tamil' | 'english') => void;
   onUploadDictionary: (words: DictionaryWord[]) => void;
   isOnline: boolean;
-  history: TranslationHistoryItem[];
-  onSelectHistoryItem: (item: TranslationHistoryItem) => void;
   onDeleteWord: (word: string) => void;
   onEditWord: (word: DictionaryWord) => void;
-  onClearHistory: () => void;
 }
 
 const OutputPanel: React.FC<OutputPanelProps> = ({ 
   response, isLoading, error, hasStreamedContent, onRetry,
   dictionary, onAddWord, isAddingWord, addWordError, clearAddWordError, onAddWordManually,
   activeTab, setActiveTab, lastTranslatedText, onWordClick, focusedWord, clearFocusedWord,
-  activeDictionaryTab, setActiveDictionaryTab, onUploadDictionary, isOnline, history, onSelectHistoryItem,
-  onDeleteWord, onEditWord, onClearHistory
+  activeDictionaryTab, setActiveDictionaryTab, onUploadDictionary, isOnline,
+  onDeleteWord, onEditWord
 }) => {
   const [copyState, setCopyState] = useState(false);
   const [isContextExpanded, setIsContextExpanded] = useState(false);
+  const [isSourcesExpanded, setIsSourcesExpanded] = useState(false);
   const [activeTranslationTab, setActiveTranslationTab] = useState<'english' | 'original' | 'deepDive'>('english');
 
 
   useEffect(() => {
     // Reset context expansion when response changes
     setIsContextExpanded(false);
+    setIsSourcesExpanded(false);
     setActiveTranslationTab('english');
   }, [response.contextAnalysis, lastTranslatedText]);
 
-  const getTabClass = (tabName: 'translation' | 'dictionary' | 'history') => {
+  const getTabClass = (tabName: 'translation' | 'dictionary') => {
     return activeTab === tabName
       ? 'text-indigo-600 border-b-2 border-indigo-600'
       : 'text-slate-500 hover:text-slate-700';
@@ -871,49 +774,9 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
         >
           Dictionary
         </button>
-        <button 
-          onClick={() => setActiveTab('history')}
-          className={`px-4 py-3 font-semibold text-sm transition-colors duration-200 whitespace-nowrap ${getTabClass('history')}`}
-        >
-          History {history.length > 0 && `(${history.length})`}
-        </button>
       </div>
 
       <div className="flex-grow overflow-hidden">
-        {activeTab === 'history' && (
-           <div className="flex flex-col h-full animate-fade-in">
-               {history.length > 0 && (
-                    <div className="flex justify-end mb-4">
-                        <button 
-                            onClick={onClearHistory}
-                            className="text-xs text-red-600 hover:text-red-800 hover:bg-red-50 px-3 py-1.5 rounded-md transition-colors font-medium border border-transparent hover:border-red-200"
-                        >
-                            Clear All History
-                        </button>
-                    </div>
-               )}
-              {history.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                     <p>No recent translations found.</p>
-                  </div>
-              ) : (
-                  <ul className="space-y-3 overflow-y-auto pr-2">
-                      {history.map((item) => (
-                          <li key={item.id} className="p-4 bg-slate-50 border border-slate-200 rounded-lg hover:border-indigo-300 transition-colors cursor-pointer" onClick={() => onSelectHistoryItem(item)}>
-                              <div className="flex justify-between items-start mb-1">
-                                  <span className="text-xs text-slate-500 font-medium">{new Date(item.timestamp).toLocaleString()}</span>
-                                  <span className="text-xs text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
-                                     {item.response.contextAnalysis?.dialect || 'General Tamil'}
-                                  </span>
-                              </div>
-                              <p className="font-sans text-slate-800 font-medium line-clamp-2 mb-2">{item.originalText}</p>
-                              <p className="text-slate-600 text-sm line-clamp-2">{item.response.translation}</p>
-                          </li>
-                      ))}
-                  </ul>
-              )}
-           </div>
-        )}
         {activeTab === 'translation' && (
           <div className="flex flex-col h-full">
             {isLoading && !hasStreamedContent && <Loader message="Translating & Generating Insights" />}
@@ -1013,10 +876,38 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
                                     language="english"
                                 />
                             </div>
+                            {Array.isArray(response.sources) && response.sources.length > 0 && (
+                                <div className="mt-4 border-t border-slate-200 pt-4">
+                                    <button
+                                        onClick={() => setIsSourcesExpanded(!isSourcesExpanded)}
+                                        className="flex justify-between items-center w-full text-left text-sm font-semibold text-slate-600 hover:text-slate-800"
+                                    >
+                                        <span>Sources ({response.sources.length})</span>
+                                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 transition-transform duration-200 ${isSourcesExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                                        </svg>
+                                    </button>
+                                    {isSourcesExpanded && (
+                                        <div className="mt-2 pl-2 space-y-1 animate-fade-in">
+                                            {response.sources.map((source, index) => (
+                                              <a key={index} href={source.uri} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline flex items-start group" title={source.uri}>
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0 mr-1.5 mt-0.5 text-slate-400 group-hover:text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
+                                                <span className="truncate">{source.title || source.uri}</span>
+                                              </a>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                           </div>
-                        ) : (
+                        ) : isLoading ? (
                            <div className="p-8 text-center text-slate-400 italic animate-pulse">
                               Generating translation...
+                           </div>
+                        ) : (
+                           <div className="p-8 text-center text-slate-500">
+                                <h4 className="font-semibold text-slate-600">Translation Not Available</h4>
+                                <p className="mt-1 text-sm">A translation could not be generated for the provided text.</p>
                            </div>
                         )
                       )}
@@ -1062,7 +953,7 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
             {!isLoading && !error && !hasStreamedContent && (
               <div className="flex flex-col items-center justify-center h-full text-center text-slate-400">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-16 h-16 mb-4">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C13.18 7.083 14.135 7 15 7c.865 0 1.72.083 2.533.243m-4.533-2.43a48.47 48.47 0 00-1.087.058M3 12.036A48.478 48.478 0 017.5 12c1.33 0 2.66.052 3.977.158M3.977 15.75A48.465 48.465 0 017.5 15.5c1.45 0 2.885.056 4.286.168m-7.759-2.990A48.467 48.467 0 007.5 12.5c1.18 0 2.345.044 3.482.126m-4.462 2.859A48.448 48.448 0 007.5 15c.955 0 1.896.038 2.815.112" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C13.18 7.083 14.135 7 15 7c.865 0 1.72.083 2.533.243m-4.533-2.43a48.47 0 00-1.087.058M3 12.036A48.478 48.478 0 017.5 12c1.33 0 2.66.052 3.977.158M3.977 15.75A48.465 48.465 0 017.5 15.5c1.45 0 2.885.056 4.286.168m-7.759-2.990A48.467 48.467 0 007.5 12.5c1.18 0 2.345.044 3.482.126m-4.462 2.859A48.448 48.448 0 007.5 15c.955 0 1.896.038 2.815.112" />
                 </svg>
                 <h3 className="text-xl font-semibold text-slate-600">Your translation will appear here</h3>
                 <p className="mt-2 max-w-md">Enter Tamil text on the left and click "Translate" to see the magic happen.</p>
@@ -1095,7 +986,7 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
 
 const DictionaryItem: React.FC<{ word: DictionaryWord, filter: string, activeTab: 'tamil' | 'english', isHighlighted: boolean, onDelete: (w: string) => void, onEdit: (w: DictionaryWord) => void }> = ({ word, filter, activeTab, isHighlighted, onDelete, onEdit }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [expandedSourcesWord, setExpandedSourcesWord] = useState<string | null>(null);
+  const [isSourcesExpanded, setIsSourcesExpanded] = useState(false);
 
   const hasDeepInfo = !!(word.variations?.length || word.example || word.origin || word.idiomExplanation || (word.etymology && word.etymology.length > 0) || word.sources?.length);
 
@@ -1129,7 +1020,7 @@ const DictionaryItem: React.FC<{ word: DictionaryWord, filter: string, activeTab
   const secondaryWord = isTamilPrimary ? word.englishWord : word.tamilWord;
   
   return (
-    <li 
+    <div 
       id={`dict-item-${encodeURIComponent(word.tamilWord)}`}
       className={`p-4 bg-slate-50 border border-slate-200 rounded-lg transition-all duration-500 group/item ${isHighlighted ? 'ring-2 ring-indigo-400 ring-offset-2 bg-indigo-50' : ''}`}
     >
@@ -1244,31 +1135,26 @@ const DictionaryItem: React.FC<{ word: DictionaryWord, filter: string, activeTab
                   <p className="mt-1 text-sm">{word.origin}</p>
                 </div>
               )}
-              {word.sources && word.sources.length > 0 && (
+              {Array.isArray(word.sources) && word.sources.length > 0 && (
                 <div>
-                  <h5 className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Sources</h5>
-                  <div className="flex flex-col space-y-1">
-                      {expandedSourcesWord === word.tamilWord ? (
-                        word.sources.map((source, index) => (
-                          <a key={index} href={source.uri} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline flex items-start group" title={source.uri}>
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0 mr-1.5 mt-0.5 text-slate-400 group-hover:text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
-                            <span className="truncate">{source.title}</span>
-                          </a>
-                        ))
-                      ) : (
-                        <a href={word.sources[0].uri} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline flex items-start group" title={word.sources[0].uri}>
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0 mr-1.5 mt-0.5 text-slate-400 group-hover:text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
-                          <span className="truncate">{word.sources[0].title}</span>
-                        </a>
-                      )}
-                  </div>
-                  {word.sources.length > 1 && (
-                    <button
-                        onClick={() => setExpandedSourcesWord(expandedSourcesWord === word.tamilWord ? null : word.tamilWord)}
-                        className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold mt-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded"
-                    >
-                        {expandedSourcesWord === word.tamilWord ? 'Show less' : `Show ${word.sources.length - 1} more sources`}
-                    </button>
+                  <button
+                      onClick={() => setIsSourcesExpanded(!isSourcesExpanded)}
+                      className="flex justify-between items-center w-full text-left text-xs font-semibold text-slate-500 uppercase tracking-wider hover:text-slate-700"
+                  >
+                      <span>Sources ({word.sources.length})</span>
+                      <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 transition-transform duration-200 ${isSourcesExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                      </svg>
+                  </button>
+                  {isSourcesExpanded && (
+                      <div className="mt-2 pl-2 space-y-1 animate-fade-in">
+                          {word.sources.map((source, index) => (
+                            <a key={index} href={source.uri} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline flex items-start group" title={source.uri}>
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0 mr-1.5 mt-0.5 text-slate-400 group-hover:text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
+                              <span className="truncate">{source.title || source.uri}</span>
+                            </a>
+                          ))}
+                      </div>
                   )}
                 </div>
               )}
@@ -1283,7 +1169,7 @@ const DictionaryItem: React.FC<{ word: DictionaryWord, filter: string, activeTab
           {isExpanded ? 'Show Less' : 'Show More Details...'}
         </button>
       )}
-    </li>
+    </div>
   );
 };
 
@@ -1314,35 +1200,44 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
   const [newWord, setNewWord] = useState('');
   const [filter, setFilter] = useState('');
   const [highlightedWord, setHighlightedWord] = useState<string | null>(null);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (focusedWord) {
-      const element = document.getElementById(`dict-item-${encodeURIComponent(focusedWord)}`);
-      if (element) {
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        setHighlightedWord(focusedWord);
-        const timer = setTimeout(() => {
-          setHighlightedWord(null);
-          clearFocusedWord();
-        }, 2500); // Highlight for 2.5 seconds
-        return () => clearTimeout(timer);
+      const targetWord = dictionary.find(w => w.tamilWord === focusedWord);
+      if (targetWord) {
+        const letter = (activeDictionaryTab === 'tamil' ? targetWord.tamilWord[0] : targetWord.englishWord[0])?.toUpperCase();
+        if (letter && !expandedGroups.has(letter)) {
+            setExpandedGroups(prev => new Set(prev).add(letter));
+        }
+
+        setTimeout(() => {
+            const element = document.getElementById(`dict-item-${encodeURIComponent(focusedWord)}`);
+            if (element) {
+              element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              setHighlightedWord(focusedWord);
+              const timer = setTimeout(() => {
+                setHighlightedWord(null);
+                clearFocusedWord();
+              }, 2500);
+              return () => clearTimeout(timer);
+            } else {
+              clearFocusedWord();
+            }
+        }, 100);
       } else {
-        // If element not found, still clear the focus state
         clearFocusedWord();
       }
     }
-  }, [focusedWord, clearFocusedWord]);
+  }, [focusedWord, dictionary, activeDictionaryTab, clearFocusedWord, expandedGroups]);
 
   const handleAddClick = async () => {
     await onAddWord(newWord);
     if(!addWordError && isOnline) {
-      // Clear input only if successful (online mode generally implies success or error handled)
-      // If offline, the AddWordToDictionary function handles opening the modal, we can clear it there or keep it.
-      // For consistent UX, we clear it here if not blocked by error.
-       setNewWord('');
+      setNewWord('');
     } else if (!isOnline) {
-       setNewWord(''); // Clear on offline manual trigger too
+       setNewWord('');
     }
   };
   
@@ -1355,10 +1250,7 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
     );
     
     const csvContent = [header.join(','), ...rows.map(row => row.join(','))].join('\n');
-    
-    // To ensure Tamil characters are encoded correctly
     const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: 'text/csv;charset=utf-8;' });
-
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
@@ -1389,7 +1281,6 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
             }
 
             const headerLine = lines.shift()!.trim();
-            // Remove BOM character if present
             const header = (headerLine.startsWith('\uFEFF') ? headerLine.substring(1) : headerLine).split(',').map(h => h.trim().replace(/"/g, ''));
             const expectedHeader = ['Tamil Word', 'English Word', 'Tamil Meaning', 'English Meaning'];
 
@@ -1422,7 +1313,7 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
             alert("Failed to read or parse the CSV file. Please ensure it is correctly formatted.");
         } finally {
             if (event.target) {
-                event.target.value = ''; // Reset file input
+                event.target.value = '';
             }
         }
     };
@@ -1464,7 +1355,6 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
       };
     }
 
-    // Fuzzy Search
     const fuzzyMatches = dictionary
       .map(d => {
         const distTamil = levenshteinDistance(d.tamilWord.toLowerCase(), query);
@@ -1472,17 +1362,56 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
         return { word: d, score: Math.min(distTamil, distEnglish) };
       })
       .filter(item => {
-          // Allow more errors for longer words
           const len = Math.max(item.word.tamilWord.length, item.word.englishWord.length);
           const maxDist = len < 5 ? 1 : len < 10 ? 2 : 3;
           return item.score <= maxDist;
       })
-      .sort((a, b) => a.score - b.score) // Sort by relevance (score)
+      .sort((a, b) => a.score - b.score)
       .map(item => item.word);
 
     return { filteredDictionary: fuzzyMatches, isFuzzySearch: true };
 
   }, [dictionary, filter, activeDictionaryTab]);
+  
+  const { groupedDictionary, alphabet } = React.useMemo(() => {
+    const groups: { [key: string]: DictionaryWord[] } = {};
+    
+    filteredDictionary.forEach(word => {
+      const key = (activeDictionaryTab === 'tamil' 
+        ? word.tamilWord[0]
+        : word.englishWord[0])?.toUpperCase();
+        
+      if (key) {
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(word);
+      }
+    });
+
+    const sortedAlphabet = Object.keys(groups).sort((a, b) => 
+        activeDictionaryTab === 'tamil' ? a.localeCompare(b, 'ta') : a.localeCompare(b, 'en')
+    );
+
+    return { groupedDictionary: groups, alphabet: sortedAlphabet };
+  }, [filteredDictionary, activeDictionaryTab]);
+
+  const handleShortcutClick = (letter: string) => {
+    setExpandedGroups(prev => new Set(prev).add(letter));
+    setTimeout(() => {
+      const element = document.getElementById(`group-header-${letter}`);
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 100);
+  };
+
+  const toggleGroup = (letter: string) => {
+    setExpandedGroups(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(letter)) newSet.delete(letter);
+      else newSet.add(letter);
+      return newSet;
+    });
+  };
 
   const getDictTabClass = (tabName: 'tamil' | 'english') => {
     return activeDictionaryTab === tabName
@@ -1565,14 +1494,7 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
                   <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                 </svg>
             </button>
-             {/* Hidden file input */}
-             <input 
-                type="file" 
-                ref={fileInputRef}
-                onChange={handleFileChange}
-                accept=".csv"
-                className="hidden"
-            />
+             <input type="file" ref={fileInputRef} onChange={handleFileChange} accept=".csv" className="hidden" />
           </div>
         </div>
 
@@ -1616,30 +1538,71 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
           </div>
         )}
 
-        {dictionary.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-32 text-slate-500 bg-slate-50 rounded-lg border border-slate-200/60 border-dashed">
-                <p>Dictionary is empty.</p>
-                <p className="text-sm mt-1">Add words above or upload a CSV.</p>
+        <div className="flex-grow flex flex-col overflow-hidden relative">
+          {alphabet.length > 0 && (
+            <div className="sticky top-0 bg-white/90 backdrop-blur-sm z-10 py-2 border-b border-slate-200 flex-shrink-0">
+              <div className="flex flex-wrap gap-1.5 justify-center">
+                {alphabet.map(letter => (
+                  <button
+                    key={letter}
+                    onClick={() => handleShortcutClick(letter)}
+                    className="w-7 h-7 flex items-center justify-center text-xs font-bold bg-slate-100 text-slate-600 rounded-md hover:bg-indigo-100 hover:text-indigo-700 transition-colors"
+                    aria-label={`Go to letter ${letter}`}
+                  >
+                    {letter}
+                  </button>
+                ))}
+              </div>
             </div>
-        ) : filteredDictionary.length === 0 ? (
-             <div className="flex flex-col items-center justify-center h-32 text-slate-500 bg-slate-50 rounded-lg border border-slate-200/60 border-dashed">
-                <p>No matches found.</p>
-            </div>
-        ) : (
-          <ul className="overflow-y-auto space-y-3 pr-2 pb-2 flex-grow">
-            {filteredDictionary.map((word) => (
-              <DictionaryItem 
-                key={word.tamilWord} 
-                word={word} 
-                filter={filter} 
-                activeTab={activeDictionaryTab} 
-                isHighlighted={highlightedWord === word.tamilWord}
-                onDelete={onDeleteWord}
-                onEdit={onEditWord}
-              />
-            ))}
-          </ul>
-        )}
+          )}
+
+          {dictionary.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full text-slate-500 bg-slate-50 rounded-lg border border-slate-200/60 border-dashed">
+                  <p>Dictionary is empty.</p>
+                  <p className="text-sm mt-1">Add words above or upload a CSV.</p>
+              </div>
+          ) : filteredDictionary.length === 0 ? (
+               <div className="flex flex-col items-center justify-center h-full text-slate-500 bg-slate-50 rounded-lg border border-slate-200/60 border-dashed">
+                  <p>No matches found for "{filter}".</p>
+              </div>
+          ) : (
+            <ul className="overflow-y-auto space-y-4 pt-4 pr-2 pb-2 flex-grow">
+              {alphabet.map(letter => {
+                const wordsInGroup = groupedDictionary[letter];
+                const isExpanded = expandedGroups.has(letter);
+                return (
+                  <li key={letter} id={`group-header-${letter}`} className="scroll-mt-16">
+                    <button
+                      onClick={() => toggleGroup(letter)}
+                      className="w-full flex justify-between items-center p-2 bg-slate-100 rounded-md hover:bg-slate-200 transition-colors text-left focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      aria-expanded={isExpanded}
+                    >
+                      <h3 className="text-lg font-semibold text-slate-700">{letter} ({wordsInGroup.length})</h3>
+                      <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 text-slate-500 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                    {isExpanded && (
+                      <div className="pl-2 pt-3 space-y-3 animate-fade-in">
+                        {wordsInGroup.map(word => (
+                          <DictionaryItem 
+                            key={word.tamilWord} 
+                            word={word} 
+                            filter={filter} 
+                            activeTab={activeDictionaryTab} 
+                            isHighlighted={highlightedWord === word.tamilWord}
+                            onDelete={onDeleteWord}
+                            onEdit={onEditWord}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { EtymologyStep } from '../types';
 
@@ -7,7 +6,7 @@ interface EtymologyTimelineProps {
 }
 
 const EtymologyTimeline: React.FC<EtymologyTimelineProps> = ({ steps }) => {
-  if (!steps || steps.length === 0) {
+  if (!Array.isArray(steps) || steps.length === 0) {
     return null;
   }
   
