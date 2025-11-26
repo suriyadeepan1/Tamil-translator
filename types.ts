@@ -1,3 +1,4 @@
+
 export interface RelatedWord {
   word: string;
   tamilWord: string;
@@ -88,4 +89,7 @@ export interface DictionaryEntryResponse {
   englishWord: string;
   tamilMeaning: string;
   englishMeaning: string;
+  success?: boolean;
+  reason?: string;
+  sources?: { uri: string; title: string; }[];
 }

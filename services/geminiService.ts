@@ -135,7 +135,7 @@ export const streamTranslationWithAddendum = async (
           -   The 'word' field MUST contain the Tamil word.
           -   The 'englishWord' field MUST contain its primary, single-word or short-phrase English equivalent (e.g., 'Respect' for 'மரியாதை').
           -   The addendum MUST include a 'meaning', 'variations', 'origin', and 'relatedWords'.
-          -   For 'variations', keep the descriptions brief.
+          -   For 'variations', include an example sentence in Tamil demonstrating the dialectal vocabulary or pronunciation, along with its English translation.
           -   For 'relatedWords', provide 1-2 highly relevant words. If none are found, an empty array \`[]\` is acceptable.
           -   The 'etymology' field is OPTIONAL. Only include it if the word has a complex and noteworthy origin. Otherwise, omit it or set it to null.
 
@@ -313,17 +313,31 @@ export const streamTranslationWithAddendum = async (
 export const getDictionaryEntry = async (tamilWord: string): Promise<DictionaryEntryResponse> => {
   try {
     const prompt = `
-      Using Google Search for accuracy, provide a concise dictionary entry for the following Tamil word.
-      Give me its primary English keyword, its meaning in Tamil, and its meaning in English.
+      You are a linguistic expert. Using Google Search for accuracy, provide a concise dictionary entry for the following Tamil word.
+      Your task is to determine if this is a valid, real-world Tamil word.
+      **Strictly verify the validity. Do not try to guess meanings for random phonetic typings if they don't map to a standard Tamil word.**
 
       Tamil Word: "${tamilWord}"
 
-      Your response MUST be a single, valid JSON object formatted as follows, with no other text or markdown.
-      {
-        "englishWord": "string (the primary English equivalent, e.g., 'Respect')",
-        "tamilMeaning": "string",
-        "englishMeaning": "string (a more detailed definition in English)"
-      }
+      **CRITICAL INSTRUCTIONS:**
+      1.  **If the word is a valid, real Tamil word:**
+          Your response MUST be a single, valid JSON object with a "success" flag set to true, and the requested definitions.
+          Example for a valid word:
+          {
+            "success": true,
+            "englishWord": "Respect",
+            "tamilMeaning": "ஒருவர் மீதுள்ள உயர்வான மதிப்பு மற்றும் மரியாதை.",
+            "englishMeaning": "A feeling of deep admiration for someone or something elicited by their abilities, qualities, or achievements."
+          }
+      2.  **If the word is NOT a valid Tamil word (e.g., it is nonsensical, a typo, random characters, or transliteration that doesn't match a real word):**
+          Your response MUST be a single, valid JSON object with the "success" flag set to false.
+          Example for an invalid word:
+          {
+            "success": false,
+            "reason": "The word is not a valid or commonly used Tamil word."
+          }
+      
+      Do not include any other text, explanations, or markdown. Your entire response must be ONLY the single JSON object.
     `;
 
     const response = await ai.models.generateContent({
@@ -341,23 +355,47 @@ export const getDictionaryEntry = async (tamilWord: string): Promise<DictionaryE
     
     const parsedResponse = extractAndParseJson(response.text);
 
-    if (parsedResponse.englishWord && parsedResponse.tamilMeaning && parsedResponse.englishMeaning) {
-      return parsedResponse as DictionaryEntryResponse;
+    // Extract sources
+    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    let sources: { uri: string; title: string; }[] = [];
+    if (groundingChunks) {
+      const uniqueSources = new Map<string, string>();
+      groundingChunks.forEach((gChunk: any) => {
+        if (gChunk.web && gChunk.web.uri) {
+          if (!uniqueSources.has(gChunk.web.uri)) {
+            uniqueSources.set(gChunk.web.uri, gChunk.web.title || gChunk.web.uri);
+          }
+        }
+      });
+      sources = Array.from(uniqueSources, ([uri, title]) => ({ uri, title }));
+    }
+
+    if (parsedResponse.success === true && parsedResponse.englishWord && parsedResponse.tamilMeaning && parsedResponse.englishMeaning) {
+      return { ...parsedResponse, sources } as DictionaryEntryResponse;
+    } else if (parsedResponse.success === false) {
+      // Return the failure response instead of throwing to allow UI to handle it gracefully
+      return { success: false, englishWord: '', tamilMeaning: '', englishMeaning: '' } as DictionaryEntryResponse;
     } else {
+      // This catches cases where the response structure is unexpected (e.g., missing success flag)
       throw new Error("Invalid response structure from API for dictionary entry.");
     }
 
   } catch (error) {
     console.error(`Error fetching dictionary entry for "${tamilWord}":`, error);
+    // Re-throw specific errors for the UI, otherwise throw a generic one.
+    if (error instanceof Error && error.message.startsWith('WORD_NOT_FOUND')) {
+      throw error;
+    }
+    
     const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-
     if (errorMessage.includes('api_key')) {
          throw new Error("Authentication failed. Check your API key.");
     }
     if (errorMessage.includes('503') || errorMessage.includes('unavailable') || errorMessage.includes('overloaded')) {
          throw new Error("Service is temporarily unavailable (503). Please try again.");
     }
-    throw new Error(`Could not find a definition for "${tamilWord}". Please check the spelling or try another word.`);
+    // Generic fallback for other issues like parsing errors or network problems.
+    throw new Error(`Could not find a definition for "${tamilWord}".`);
   }
 };
 

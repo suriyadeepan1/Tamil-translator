@@ -294,26 +294,30 @@ const App: React.FC = () => {
     setUserInput('');
   };
 
+  const handleAddWordManually = (wordToAdd: string) => {
+    setEditingWord({ 
+       tamilWord: wordToAdd, 
+       englishWord: '', 
+       tamilMeaning: '', 
+       englishMeaning: '' 
+    });
+    setIsWordModalOpen(true);
+  };
+  
   const handleAddWordToDictionary = async (newWord: string) => {
     const trimmedWord = newWord.trim();
     if (!trimmedWord) {
       setAddWordError({ message: "Please enter a word."});
       return;
     }
-    if (dictionary.some(d => d.tamilWord === trimmedWord)) {
+    // Normalize string to check for duplicates
+    if (dictionary.some(d => d.tamilWord.normalize() === trimmedWord.normalize())) {
       setAddWordError({ message: "This word is already in the dictionary." });
       return;
     }
     
     if (!isOnline) {
-       // If offline, don't show error, just open the manual entry modal prefilled
-       setEditingWord({ 
-           tamilWord: trimmedWord, 
-           englishWord: '', 
-           tamilMeaning: '', 
-           englishMeaning: '' 
-       });
-       setIsWordModalOpen(true);
+       handleAddWordManually(trimmedWord);
        setAddWordError(null);
        return;
     }
@@ -323,44 +327,34 @@ const App: React.FC = () => {
     
     try {
       const entry = await getDictionaryEntry(trimmedWord);
-      const newDictionaryWord: DictionaryWord = {
-        tamilWord: trimmedWord,
-        englishWord: entry.englishWord,
-        tamilMeaning: entry.tamilMeaning,
-        englishMeaning: entry.englishMeaning
-      };
-      setDictionary(prev => [newDictionaryWord, ...prev].sort((a, b) => a.tamilWord.localeCompare(b.tamilWord, 'ta')));
-    } catch (error) {
-      if (error instanceof Error) {
-        if (error.message.includes('Could not find a definition for')) {
-          setAddWordError({ message: error.message, word: trimmedWord });
-        } else {
-          setAddWordError({ message: error.message });
-        }
+      
+      // If the AI service explicitly says success is false, or if it failed to provide basic fields
+      if (entry.success === false) {
+          handleAddWordManually(trimmedWord);
       } else {
-        setAddWordError({ message: "An unknown error occurred." });
+          // Word found, add to dictionary. Explicitly saving sources.
+          const newDictionaryWord: DictionaryWord = {
+            tamilWord: trimmedWord,
+            englishWord: entry.englishWord,
+            tamilMeaning: entry.tamilMeaning,
+            englishMeaning: entry.englishMeaning,
+            sources: entry.sources || [] // Ensure sources are passed
+          };
+          setDictionary(prev => [newDictionaryWord, ...prev].sort((a, b) => a.tamilWord.localeCompare(b.tamilWord, 'ta')));
       }
+
+    } catch (error) {
+        console.error("Add word error:", error);
+        // If an error occurs, fallback to manual entry
+        handleAddWordManually(trimmedWord);
     } finally {
       setIsAddingWord(false);
     }
   };
-  
-  const handleAddWordManually = (wordToAdd: string) => {
-    setEditingWord({ 
-       tamilWord: wordToAdd, 
-       englishWord: '', 
-       tamilMeaning: '', 
-       englishMeaning: '' 
-    });
-    setIsWordModalOpen(true);
-    setAddWordError(null);
-  };
 
   const handleWordClick = (word: DictionaryWord, language: 'tamil' | 'english') => {
     setActiveTab('dictionary');
-    // Set the correct sub-tab within the dictionary view
     setActiveDictionaryTab(language);
-    // Set the word to focus on, using tamilWord as the unique identifier
     setFocusedWord(word.tamilWord);
   };
 
@@ -376,9 +370,14 @@ const App: React.FC = () => {
     });
   };
   
-  const handleDeleteWord = (tamilWord: string) => {
-    if (window.confirm(`Are you sure you want to delete "${tamilWord}" from the dictionary?`)) {
-        setDictionary(prev => prev.filter(w => w.tamilWord !== tamilWord));
+  // NOTE: Removed useCallback intentionally.
+  // The delete handler must close over the most recent dictionary state without caching issues.
+  const handleDeleteWord = (tamilWordToDelete: string) => {
+    if (window.confirm(`Are you sure you want to delete "${tamilWordToDelete}" from the dictionary?`)) {
+        // Use normalization to ensure we catch the exact word regardless of unicode variations
+        setDictionary(currentDictionary => 
+            currentDictionary.filter(w => w.tamilWord.normalize() !== tamilWordToDelete.normalize())
+        );
     }
   };
   
@@ -388,23 +387,22 @@ const App: React.FC = () => {
   };
 
   const handleSaveWord = (word: DictionaryWord) => {
-      // Update the dictionary state directly. If it's an edit, it overwrites based on tamilWord key.
-      // Note: If user changes Tamil word, it acts as a new entry. We might need to delete the old one if we want to support renaming key.
-      // For simplicity, we'll treat tamilWord as the ID. If they edit the tamil word, we remove the old one from 'editingWord' reference if it differs.
-      
       setDictionary(prev => {
           let newDict = [...prev];
           
-          // If editing an existing word and the tamil word changed, remove the old entry
-          if (editingWord && editingWord.tamilWord !== word.tamilWord) {
-               newDict = newDict.filter(w => w.tamilWord !== editingWord.tamilWord);
+          // If editing, remove the old entry
+          if (editingWord && editingWord.tamilWord.normalize() !== word.tamilWord.normalize()) {
+               newDict = newDict.filter(w => w.tamilWord.normalize() !== editingWord.tamilWord.normalize());
           }
           
-          // Remove any existing entry with the NEW tamil word to avoid duplicates/conflict
-          newDict = newDict.filter(w => w.tamilWord !== word.tamilWord);
+          // Remove potential duplicate
+          newDict = newDict.filter(w => w.tamilWord.normalize() !== word.tamilWord.normalize());
           
-          // Add the new/updated word
-          newDict.push(word);
+          // Preserve existing extra data if we are editing, but overwrite core fields
+          const existingData = editingWord || {};
+          const mergedWord = { ...existingData, ...word };
+
+          newDict.push(mergedWord);
           return newDict.sort((a, b) => a.tamilWord.localeCompare(b.tamilWord, 'ta'));
       });
       setIsWordModalOpen(false);
@@ -988,7 +986,7 @@ const DictionaryItem: React.FC<{ word: DictionaryWord, filter: string, activeTab
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSourcesExpanded, setIsSourcesExpanded] = useState(false);
 
-  const hasDeepInfo = !!(word.variations?.length || word.example || word.origin || word.idiomExplanation || (word.etymology && word.etymology.length > 0) || word.sources?.length);
+  const hasDeepInfo = !!(word.variations?.length || word.example || word.origin || word.idiomExplanation || (word.etymology && word.etymology.length > 0) || (word.sources && word.sources.length > 0));
 
   const highlightMatch = (text: string, query: string): React.ReactNode => {
     if (!query.trim() || !text) {
@@ -1234,10 +1232,10 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
 
   const handleAddClick = async () => {
     await onAddWord(newWord);
-    if(!addWordError && isOnline) {
+    // Only clear input if the automatic add was successful
+    const newError = addWordError; // Read the state after onAddWord
+    if(!newError) {
       setNewWord('');
-    } else if (!isOnline) {
-       setNewWord('');
     }
   };
   
@@ -1458,14 +1456,6 @@ const DictionaryView: React.FC<DictionaryViewProps> = ({
         {addWordError && (
           <div className="mt-2 p-3 bg-red-50 border-l-4 border-red-400 rounded-r-lg">
             <p className="text-sm font-medium text-red-800">{addWordError.message}</p>
-            {addWordError.word && (
-              <button 
-                onClick={() => onAddWordManually(addWordError.word!)}
-                className="mt-2 text-sm font-semibold text-indigo-600 hover:text-indigo-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded"
-              >
-                Add "{addWordError.word}" with a placeholder definition
-              </button>
-            )}
           </div>
         )}
       </div>
